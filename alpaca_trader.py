@@ -1,6 +1,7 @@
 import os
 import pickle
 import warnings
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
@@ -18,6 +19,15 @@ warnings.filterwarnings("ignore")
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_DIR, "data")
 MODEL_DIR = os.path.join(PROJECT_DIR, "models")
+
+env_file = os.path.join(PROJECT_DIR, ".env")
+if os.path.exists(env_file):
+    with open(env_file) as f:
+        for line in f:
+            if "=" in line:
+                key, value = line.strip().split("=", 1)
+                os.environ[key] = value
+
 LOOK_BACK = 60
 TICKER = "^GSPC"
 THRESHOLD = 0.005
@@ -72,7 +82,7 @@ def get_account():
     return None
 
 
-def get_position(symbol="SPY"):
+def get_position(symbol="^GSPC"):
     resp = requests.get(f"{ALPACA_URL}/v2/positions/{symbol}", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -91,7 +101,7 @@ def place_order(symbol, qty, side):
     return resp.json() if resp.status_code in [200, 201] else {"error": resp.text}
 
 
-def close_position(symbol="SPY"):
+def close_position(symbol="^GSPC"):
     resp = requests.delete(f"{ALPACA_URL}/v2/positions/{symbol}", headers=HEADERS)
     return resp.json() if resp.status_code in [200, 204] else {"error": resp.text}
 
@@ -135,21 +145,21 @@ def main():
     print(f"Current price: ${current_price:.2f}")
     print(f"Predicted:    ${predicted_price:.2f} ({change_pct:+.2f}%)")
 
-    position = get_position("SPY")
+    position = get_position("^GSPC")
     shares = int(float(position["qty"])) if position else 0
 
     if change_pct > THRESHOLD * 100 and shares == 0:
         action = "BUY"
         qty = int(cash / current_price)
-        print(f"\n>>> {action} {qty} shares of SPY")
-        result = place_order("SPY", qty, "buy")
+        print(f"\n>>> {action} {qty} shares of ^GSPC")
+        result = place_order("^GSPC", qty, "buy")
         print(f"    Result: {result.get('status', result)}")
         log_signal(action, current_price, predicted_price, change_pct)
 
     elif change_pct < -THRESHOLD * 100 and shares > 0:
         action = "SELL"
-        print(f"\n>>> {action} {shares} shares of SPY")
-        result = close_position("SPY")
+        print(f"\n>>> {action} {shares} shares of ^GSPC")
+        result = close_position("^GSPC")
         print(f"    Result: {result.get('status', result)}")
         log_signal(action, current_price, predicted_price, change_pct)
 
