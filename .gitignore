@@ -134,11 +134,19 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# MrKrabs project specific
+data/
+models/
+results/
+logs/
+*.keras
+*.pkl
+*.npy
+
 # Environments
 .env
 .envrc
 .venv
-env/
 venv/
 ENV/
 env.bak/
