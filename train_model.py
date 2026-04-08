@@ -3,8 +3,9 @@ import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Input
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.regularizers import l2
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_DIR, "data")
@@ -12,54 +13,83 @@ MODEL_DIR = os.path.join(PROJECT_DIR, "models")
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 LOOK_BACK = 60
-FEATURES = 5
+FEATURES = 25  # Now includes technical indicators
 EPOCHS = 50
 BATCH_SIZE = 32
 
 
-def load_data():
-    X_train = np.load(f"{DATA_DIR}/X_train.npy")
-    X_test = np.load(f"{DATA_DIR}/X_test.npy")
+def load_data(flat=False):
+    if flat:
+        X_train = np.load(f"{DATA_DIR}/X_train_flat.npy")
+        X_test = np.load(f"{DATA_DIR}/X_test_flat.npy")
+    else:
+        X_train = np.load(f"{DATA_DIR}/X_train.npy")
+        X_test = np.load(f"{DATA_DIR}/X_test.npy")
+    
     y_train = np.load(f"{DATA_DIR}/y_train.npy")
     y_test = np.load(f"{DATA_DIR}/y_test.npy")
+    
+    # Direction labels (for classifier)
+    y_dir_train = np.load(f"{DATA_DIR}/y_dir_train.npy")
+    y_dir_test = np.load(f"{DATA_DIR}/y_dir_test.npy")
 
     print(f"X_train shape: {X_train.shape}")
     print(f"X_test shape: {X_test.shape}")
     print(f"y_train shape: {y_train.shape}")
-    print(f"y_test shape: {y_test.shape}")
+    print(f"Direction labels: up={sum(y_dir_train)}, down={len(y_dir_train)-sum(y_dir_train)}")
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_test, y_train, y_test, y_dir_train, y_dir_test
 
 
-def build_model():
-    print("\nBuilding LSTM model...")
+def build_regression_model():
+    """LSTM for price regression"""
+    print("\nBuilding LSTM Regression Model...")
 
-    model = Sequential(
-        [
-            LSTM(64, return_sequences=True, input_shape=(LOOK_BACK, FEATURES)),
-            Dropout(0.2),
-            LSTM(32, return_sequences=False),
-            Dropout(0.2),
-            Dense(16, activation="relu"),
-            Dense(1),
-        ]
-    )
+    model = Sequential([
+        LSTM(128, return_sequences=True, input_shape=(LOOK_BACK, FEATURES), 
+             kernel_regularizer=l2(0.001)),
+        Dropout(0.3),
+        LSTM(64, return_sequences=False, kernel_regularizer=l2(0.001)),
+        Dropout(0.3),
+        Dense(32, activation="relu", kernel_regularizer=l2(0.001)),
+        Dense(16, activation="relu"),
+        Dense(1),
+    ])
 
     model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-
     model.summary()
     return model
 
 
-def train_model(model, X_train, y_train, X_test, y_test):
-    print("\nTraining model...")
+def build_classifier_model():
+    """Bidirectional LSTM for directional classification"""
+    print("\nBuilding Directional Classifier Model...")
+
+    model = Sequential([
+        Bidirectional(LSTM(64, return_sequences=True, input_shape=(LOOK_BACK, FEATURES))),
+        Dropout(0.3),
+        Bidirectional(LSTM(32)),
+        Dropout(0.3),
+        Dense(16, activation="relu"),
+        Dense(1, activation="sigmoid"),
+    ])
+
+    model.compile(
+        optimizer="adam",
+        loss="binary_crossentropy",
+        metrics=["accuracy", tf.keras.metrics.AUC()]
+    )
+    model.summary()
+    return model
+
+
+def train_regression(model, X_train, y_train, X_test, y_test):
+    print("\nTraining Regression Model...")
 
     callbacks = [
-        EarlyStopping(
-            monitor="val_loss", patience=10, restore_best_weights=True, verbose=1
-        ),
+        EarlyStopping(monitor="val_loss", patience=15, restore_best_weights=True, verbose=1),
         ModelCheckpoint(
-            f"{MODEL_DIR}/best_model.keras",
+            f"{MODEL_DIR}/regression_model.keras",
             monitor="val_loss",
             save_best_only=True,
             verbose=1,
@@ -67,53 +97,153 @@ def train_model(model, X_train, y_train, X_test, y_test):
     ]
 
     history = model.fit(
-        X_train,
-        y_train,
+        X_train, y_train,
         epochs=EPOCHS,
         batch_size=BATCH_SIZE,
         validation_data=(X_test, y_test),
         callbacks=callbacks,
         verbose=1,
     )
-
     return history
 
 
-def evaluate_model(model, X_test, y_test):
-    print("\nEvaluating model...")
+def train_classifier(model, X_train, y_dir_train, X_test, y_dir_test):
+    print("\nTraining Classifier Model...")
 
-    train_loss, train_mae = model.evaluate(X_test[:1000], y_test[:1000], verbose=0)
-    test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
+    callbacks = [
+        EarlyStopping(monitor="val_accuracy", patience=15, restore_best_weights=True, verbose=1),
+        ModelCheckpoint(
+            f"{MODEL_DIR}/classifier_model.keras",
+            monitor="val_accuracy",
+            save_best_only=True,
+            verbose=1,
+        ),
+    ]
 
-    print(f"  Test Loss (MSE): {test_loss:.6f}")
-    print(f"  Test MAE: {test_mae:.6f}")
+    history = model.fit(
+        X_train, y_dir_train,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        validation_data=(X_test, y_dir_test),
+        callbacks=callbacks,
+        verbose=1,
+    )
+    return history
 
-    predictions = model.predict(X_test, verbose=0)
 
-    from sklearn.metrics import mean_absolute_error, mean_squared_error
+def evaluate_model(model, X_test, y_test, model_type="regression"):
+    print(f"\nEvaluating {model_type} Model...")
+    
+    if model_type == "classifier":
+        from sklearn.metrics import accuracy_score, classification_report
+        preds = model.predict(X_test, verbose=0)
+        preds_binary = (preds > 0.5).astype(int).flatten()
+        accuracy = accuracy_score(y_test, preds_binary)
+        print(f"  Test Accuracy: {accuracy:.4f}")
+        print(f"  Classification Report:")
+        print(classification_report(y_test, preds_binary, target_names=['Down', 'Up']))
+        return preds
+    else:
+        test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
+        print(f"  Test Loss (MSE): {test_loss:.6f}")
+        print(f"  Test MAE: {test_mae:.6f}")
+        
+        predictions = model.predict(X_test, verbose=0)
+        
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+        rmse = np.sqrt(mean_squared_error(y_test, predictions))
+        mae = mean_absolute_error(y_test, predictions)
+        print(f"  RMSE: {rmse:.6f}")
+        print(f"  MAE: {mae:.6f}")
+        return predictions
 
-    rmse = np.sqrt(mean_squared_error(y_test, predictions))
-    mae = mean_absolute_error(y_test, predictions)
 
-    print(f"  RMSE: {rmse:.6f}")
-    print(f"  MAE: {mae:.6f}")
-
-    return predictions
+def train_xgboost():
+    """Train XGBoost classifier on flat features"""
+    print("\n" + "="*50)
+    print("Training XGBoost Classifier")
+    print("="*50)
+    
+    try:
+        from xgboost import XGBClassifier
+    except ImportError:
+        print("Installing xgboost...")
+        import subprocess
+        subprocess.run(['pip', 'install', 'xgboost'], check=True)
+        from xgboost import XGBClassifier
+    
+    X_train, X_test, y_train, y_test, y_dir_train, y_dir_test = load_data(flat=True)
+    
+    print(f"\nTraining XGBoost on {X_train.shape[1]} features...")
+    
+    model = XGBClassifier(
+        n_estimators=200,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        use_label_encoder=False,
+        eval_metric='logloss'
+    )
+    
+    model.fit(
+        X_train, y_dir_train,
+        eval_set=[(X_test, y_dir_test)],
+        verbose=50
+    )
+    
+    # Save model
+    import pickle
+    with open(f"{MODEL_DIR}/xgboost_model.pkl", 'wb') as f:
+        pickle.dump(model, f)
+    print(f"Saved XGBoost model to {MODEL_DIR}/xgboost_model.pkl")
+    
+    # Evaluate
+    from sklearn.metrics import accuracy_score
+    preds = model.predict(X_test)
+    acc = accuracy_score(y_dir_test, preds)
+    print(f"XGBoost Test Accuracy: {acc:.4f}")
+    
+    return model
 
 
 def main():
     print("=" * 50)
+    print("Enhanced Trading Model Training")
     print("=" * 50)
 
-    X_train, X_test, y_train, y_test = load_data()
-
-    model = build_model()
-
-    history = train_model(model, X_train, y_train, X_test, y_test)
-
-    predictions = evaluate_model(model, X_test, y_test)
-
-    return model, history, predictions, y_test
+    X_train, X_test, y_train, y_test, y_dir_train, y_dir_test = load_data()
+    
+    # 1. Train Regression Model
+    print("\n" + "="*50)
+    print("1. Training Regression Model")
+    print("="*50)
+    reg_model = build_regression_model()
+    reg_history = train_regression(reg_model, X_train, y_train, X_test, y_test)
+    reg_preds = evaluate_model(reg_model, X_test, y_test, "regression")
+    
+    # 2. Train Classifier Model
+    print("\n" + "="*50)
+    print("2. Training Directional Classifier")
+    print("="*50)
+    clf_model = build_classifier_model()
+    clf_history = train_classifier(clf_model, X_train, y_dir_train, X_test, y_dir_test)
+    clf_preds = evaluate_model(clf_model, X_test, y_dir_test, "classifier")
+    
+    # 3. Train XGBoost
+    print("\n" + "="*50)
+    print("3. Training XGBoost")
+    print("="*50)
+    xgb_model = train_xgboost()
+    
+    print("\n" + "="*50)
+    print("Training Complete!")
+    print("="*50)
+    print("Models saved:")
+    print(f"  - {MODEL_DIR}/regression_model.keras")
+    print(f"  - {MODEL_DIR}/classifier_model.keras")
+    print(f"  - {MODEL_DIR}/xgboost_model.pkl")
 
 
 if __name__ == "__main__":

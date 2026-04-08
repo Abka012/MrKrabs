@@ -23,8 +23,8 @@ LOG_DIR = os.path.join(PROJECT_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOOK_BACK = 60
-TICKERS = ["^GSPC"]
-THRESHOLD = 0.005
+TICKERS = ["SPY"]
+THRESHOLD = 0.45  # Classifier threshold (45% - trade on any upward signal)
 INITIAL_CAPITAL = 10000
 
 logging.basicConfig(
@@ -37,12 +37,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def compute_rsi(prices, period=14):
+    delta = prices.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+def compute_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    histogram = macd - signal_line
+    return macd, signal_line, histogram
+
+
+def compute_bollinger_bands(prices, period=20):
+    sma = prices.rolling(window=period).mean()
+    std = prices.rolling(window=period).std()
+    upper = sma + (std * 2)
+    lower = sma - (std * 2)
+    return sma, upper, lower
+
+
+def compute_atr(high, low, close, period=14):
+    tr = np.maximum(high - low, 
+                    np.maximum(abs(high - close.shift(1)), 
+                               abs(low - close.shift(1))))
+    atr = tr.rolling(window=period).mean()
+    return atr
+
+
+def add_technical_indicators(df):
+    close = df['Close']
+    high = df['High']
+    low = df['Low']
+    volume = df['Volume']
+    
+    df['RSI'] = compute_rsi(close)
+    macd, signal, hist = compute_macd(close)
+    df['MACD'] = macd
+    df['MACD_Signal'] = signal
+    df['MACD_Hist'] = hist
+    df['SMA_20'] = close.rolling(window=20).mean()
+    df['SMA_50'] = close.rolling(window=50).mean()
+    df['SMA_200'] = close.rolling(window=200).mean()
+    df['Price_SMA20_Ratio'] = close / df['SMA_20']
+    df['Price_SMA50_Ratio'] = close / df['SMA_50']
+    sma, upper, lower = compute_bollinger_bands(close)
+    df['BB_Upper'] = upper
+    df['BB_Lower'] = lower
+    df['BB_Width'] = (upper - lower) / sma
+    df['ATR'] = compute_atr(high, low, close)
+    df['Momentum_5'] = close / close.shift(5) - 1
+    df['Momentum_10'] = close / close.shift(10) - 1
+    df['Momentum_20'] = close / close.shift(20) - 1
+    df['Volume_SMA_20'] = volume.rolling(window=20).mean()
+    df['Volume_Ratio'] = volume / df['Volume_SMA_20']
+    df['Daily_Return'] = close.pct_change()
+    df['Volatility_10'] = df['Daily_Return'].rolling(window=10).std()
+    df['Volatility_20'] = df['Daily_Return'].rolling(window=20).std()
+    df = df.fillna(0)
+    return df
+
+
 class TradingBot:
     def __init__(self):
-        logger.info("Initializing Trading Bot...")
+        logger.info("Initializing Trading Bot with Classifier...")
         self.scaler = self.load_scaler()
         self.model = self.load_model()
-        self.position = 0
+        self.position = 0  # positive = long, negative = short
         self.capital = INITIAL_CAPITAL
         self.portfolio_value = INITIAL_CAPITAL
         
@@ -53,69 +121,44 @@ class TradingBot:
         return scaler
     
     def load_model(self):
-        model = load_model(f"{MODEL_DIR}/best_model.keras")
-        logger.info("Loaded model")
+        model = load_model(f"{MODEL_DIR}/classifier_model.keras")
+        logger.info("Loaded classifier model")
         return model
     
-    def fetch_recent_data(self, ticker, days=90):
+    def fetch_recent_data(self, ticker, days=120):
         stock = yf.Ticker(ticker)
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         df = stock.history(start=start_date, end=end_date)
+        df = df.dropna(subset=['Close'])
         
         if len(df) < LOOK_BACK:
             logger.warning(f"Insufficient data for {ticker}: {len(df)} rows")
             return None
         
         logger.info(f"Fetched {len(df)} days of data for {ticker}")
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        return df
     
-    def prepare_sequence(self, data):
-        if isinstance(data, pd.DataFrame):
-            data = data.values
+    def prepare_features(self, df):
+        df = add_technical_indicators(df)
         
-        scaled_data = self.scaler.transform(data)
+        feature_cols = [
+            'Open', 'High', 'Low', 'Close', 'Volume',
+            'RSI', 'MACD', 'MACD_Signal', 'MACD_Hist',
+            'SMA_20', 'SMA_50', 'SMA_200',
+            'Price_SMA20_Ratio', 'Price_SMA50_Ratio',
+            'BB_Upper', 'BB_Lower', 'BB_Width',
+            'ATR', 'Momentum_5', 'Momentum_10', 'Momentum_20',
+            'Volume_Ratio', 'Daily_Return', 'Volatility_10', 'Volatility_20'
+        ]
         
-        sequence = scaled_data[-LOOK_BACK:]
-        return sequence.reshape(1, LOOK_BACK, 5)
+        return df[feature_cols]
     
-    def predict_next_price(self, sequence):
-        pred_scaled = self.model.predict(sequence, verbose=0)[0, 0]
-        
-        dummy = np.zeros((1, 5))
-        dummy[0, 3] = pred_scaled
-        predicted_price = self.scaler.inverse_transform(dummy)[0, 3]
-        
-        return predicted_price
-    
-    def get_current_price(self, ticker):
-        stock = yf.Ticker(ticker)
-        return stock.history(period='1d')['Close'][-1]
-    
-    def should_buy(self, predicted_price, current_price):
-        change_pct = (predicted_price - current_price) / current_price
-        return change_pct > THRESHOLD
-    
-    def should_sell(self, predicted_price, current_price):
-        change_pct = (predicted_price - current_price) / current_price
-        return change_pct < -THRESHOLD
-    
-    def execute_buy(self, ticker, current_price):
-        if self.capital > 0:
-            shares = self.capital / current_price
-            self.position = shares
-            self.capital = 0
-            logger.info(f"BUY {shares:.2f} shares of {ticker} at ${current_price:.2f}")
-            return True
-        return False
-    
-    def execute_sell(self, ticker, current_price):
-        if self.position > 0:
-            self.capital = self.position * current_price
-            logger.info(f"SELL {self.position:.2f} shares of {ticker} at ${current_price:.2f}")
-            self.position = 0
-            return True
-        return False
+    def predict_direction(self, features):
+        scaled = self.scaler.transform(features.values)
+        seq = scaled[-LOOK_BACK:].reshape(1, LOOK_BACK, 25)
+        prob_up = self.model.predict(seq, verbose=0)[0, 0]
+        return prob_up
     
     def run_strategy(self, ticker):
         logger.info(f"\n{'='*50}")
@@ -130,21 +173,53 @@ class TradingBot:
         current_price = data['Close'].iloc[-1]
         logger.info(f"Current price: ${current_price:.2f}")
         
-        sequence = self.prepare_sequence(data)
-        predicted_price = self.predict_next_price(sequence)
-        logger.info(f"Predicted next price: ${predicted_price:.2f}")
+        features = self.prepare_features(data)
+        prob_up = self.predict_direction(features)
+        prob_down = 1 - prob_up
         
-        change_pct = (predicted_price - current_price) / current_price * 100
-        logger.info(f"Predicted change: {change_pct:+.2f}%")
+        logger.info(f"Probability UP: {prob_up:.2%}")
+        logger.info(f"Probability DOWN: {prob_down:.2%}")
         
-        if self.should_buy(predicted_price, current_price):
-            self.execute_buy(ticker, current_price)
-        elif self.should_sell(predicted_price, current_price):
-            self.execute_sell(ticker, current_price)
+        # Trading logic
+        # LONG when prob_up > THRESHOLD
+        # SHORT when prob_down > THRESHOLD
+        
+        if prob_up > THRESHOLD and self.position <= 0:
+            # Buy LONG
+            available = self.capital * 0.15
+            shares = int(available / current_price)
+            self.position = shares
+            self.capital = self.capital - (shares * current_price)
+            logger.info(f"BUY (LONG) {shares} shares of {ticker} at ${current_price:.2f}")
+            
+        elif prob_down > THRESHOLD and self.position >= 0:
+            # Sell existing long and go SHORT
+            if self.position > 0:
+                self.capital = self.capital + (self.position * current_price)
+                logger.info(f"SELL {self.position} shares at ${current_price:.2f}")
+            
+            # Enter short
+            available = self.capital * 0.15
+            shares = int(available / current_price)
+            self.position = -shares
+            self.capital = self.capital + (shares * current_price)
+            logger.info(f"SHORT {shares} shares of {ticker} at ${current_price:.2f}")
+            
+        elif (prob_up > THRESHOLD and self.position < 0) or (prob_down > THRESHOLD and self.position > 0):
+            # Cover positions
+            if self.position > 0:
+                self.capital = self.capital + (self.position * current_price)
+                logger.info(f"SELL {self.position} shares at ${current_price:.2f}")
+                self.position = 0
+            elif self.position < 0:
+                shares = abs(self.position)
+                self.capital = self.capital + (shares * current_price)
+                logger.info(f"COVER {shares} shares at ${current_price:.2f}")
+                self.position = 0
         else:
-            logger.info("No action - holding position")
+            logger.info(f"HOLD - No clear signal")
         
-        self.portfolio_value = self.capital + (self.position * current_price)
+        self.portfolio_value = self.capital + (abs(self.position) * current_price)
         logger.info(f"Portfolio Value: ${self.portfolio_value:.2f}")
         logger.info(f"  Cash: ${self.capital:.2f}")
         logger.info(f"  Position: {self.position:.2f} shares")
@@ -165,10 +240,10 @@ class TradingBot:
         logger.info(f"Initial Capital: ${INITIAL_CAPITAL:.2f}")
         logger.info(f"Current Value: ${self.portfolio_value:.2f}")
         logger.info(f"Total Return: {total_return:+.2f}%")
-        logger.info(f"Current Position: {'Long' if self.position > 0 else 'Flat'}")
+        logger.info(f"Current Position: {'Long' if self.position > 0 else 'Short' if self.position < 0 else 'Flat'}")
 
 def main():
-    logger.info("Starting LSTM Trading Bot")
+    logger.info("Starting LSTM Classifier Trading Bot")
     
     bot = TradingBot()
     
