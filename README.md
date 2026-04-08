@@ -51,6 +51,8 @@ python alpaca_trader.py
 - **Short Selling**: Support for short positions (predict DOWN → SHORT)
 - **Market Hours Check**: Only executes trades when market is open (9:30 AM - 4:00 PM ET)
 - **Directional Trading**: Classifier predicts UP/DOWN with probability threshold
+- **Automatic Trading**: Runs on cron every 5 minutes during market hours
+- **Multiple Trades Per Day**: No limit on trades per day
 
 ## Configuration
 
@@ -58,6 +60,7 @@ Edit script constants in each file:
 - `TICKER = "SPY"` - S&P 500 ETF (tradable)
 - `LOOK_BACK = 60` - 60-day sequence window
 - `THRESHOLD = 0.45` - Classifier threshold (45% triggers trade on any upward signal)
+- `POSITION_SIZE = 0.15` - 15% of cash per trade (in alpaca_trader.py)
 
 ## Backtest Results
 
@@ -83,14 +86,23 @@ For automatic trade execution:
    ```
 3. Run: `python alpaca_trader.py`
 
-**Note**: Trades only execute when market is open. Use `run_bot.sh` with cron for hourly execution.
+**Note**: Trades only execute when market is open. Use `run_bot.sh` with cron for 5-minute execution.
 
 ## Scheduling
 
-Add to crontab for hourly execution (during market hours):
+Add to crontab for execution every 5 minutes during market hours:
 ```bash
 crontab -e
-0 9-16 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+*/5 9-16 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+```
+
+This runs the bot every 5 minutes from 9 AM to 4 PM on weekdays (Mon-Fri).
+
+### Manual Run
+
+To test without cron:
+```bash
+./run_bot.sh
 ```
 
 ## Requirements
