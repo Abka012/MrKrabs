@@ -406,6 +406,23 @@ def choose_trade_mode(ticker, account, current_price, prob_up, features):
     confidence_gap = abs(prob_up - 0.5)
     direction = "UP" if prob_up > 0.5 else "DOWN"
     expected_move_pct = estimate_expected_move_pct(features, current_price, confidence_gap)
+    signal = evaluate_signal(features, current_price, prob_up)
+    signal_is_actionable = signal["bullish_signal"] or signal["bearish_signal"]
+
+    if not signal_is_actionable:
+        return {
+            "mode": "hold",
+            "reason": (
+                "live signal does not meet entry thresholds "
+                f"(long {LONG_ENTRY_THRESHOLD:.0%}, short {SHORT_ENTRY_THRESHOLD:.0%}, "
+                f"min gap {MIN_CONFIDENCE_GAP:.0%}; got {confidence_gap:.2%})"
+            ),
+            "contract": None,
+            "expected_move_pct": expected_move_pct,
+            "equity_edge": None,
+            "option_edge": None,
+            "direction": direction,
+        }
 
     if selector_artifact:
         feature_map = build_live_selector_features(features, current_price, prob_up)
@@ -808,7 +825,13 @@ def main(ticker):
             f"Expected move: {decision['expected_move_pct']:.2%} | "
             f"Reason: {decision['reason']}"
         )
-        if decision["mode"] == "option":
+        if decision["mode"] == "hold":
+            log_signal("HOLD", current_price, prob_up, decision["direction"])
+            print(
+                "\n>>> HOLD - Auto mode rejected trade before execution "
+                f"(predicted: {decision['direction']})"
+            )
+        elif decision["mode"] == "option":
             trade_option(
                 ticker, account, current_price, prob_up, features, decision["contract"]
             )

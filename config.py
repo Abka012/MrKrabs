@@ -17,9 +17,9 @@ DEFAULT_TICKER = "SPY"
 # Trading settings
 POSITION_SIZE = 0.05  # 5% of cash per trade
 THRESHOLD = 0.45  # Legacy threshold retained for compatibility
-LONG_ENTRY_THRESHOLD = 0.58
-SHORT_ENTRY_THRESHOLD = 0.42
-MIN_CONFIDENCE_GAP = 0.08
+LONG_ENTRY_THRESHOLD = 0.53
+SHORT_ENTRY_THRESHOLD = 0.47
+MIN_CONFIDENCE_GAP = 0.03
 TRADE_MODE = "equity"  # equity, option, or auto
 ALLOW_SHORTS = True
 USE_TREND_FILTER = True
