@@ -22,7 +22,7 @@ SHORT_ENTRY_THRESHOLD = 0.47
 MIN_CONFIDENCE_GAP = 0.03
 TRADE_MODE = "equity"  # equity, option, or auto
 ALLOW_SHORTS = True
-USE_TREND_FILTER = True
+USE_TREND_FILTER = False
 
 # Options settings
 OPTIONS_POSITION_SIZE = 0.05  # 5% of options buying power per trade
