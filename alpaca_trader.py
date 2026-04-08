@@ -210,6 +210,10 @@ def check_alpaca_keys():
     return True
 
 
+def ticker_print(ticker, message):
+    print(f"[{ticker}] {message}")
+
+
 def get_account():
     resp = requests.get(f"{ALPACA_URL}/v2/account", headers=HEADERS)
     if resp.status_code == 200:
@@ -412,11 +416,7 @@ def choose_trade_mode(ticker, account, current_price, prob_up, features):
     if not signal_is_actionable:
         return {
             "mode": "hold",
-            "reason": (
-                "live signal does not meet entry thresholds "
-                f"(long {LONG_ENTRY_THRESHOLD:.0%}, short {SHORT_ENTRY_THRESHOLD:.0%}, "
-                f"min gap {MIN_CONFIDENCE_GAP:.0%}; got {confidence_gap:.2%})"
-            ),
+            "reason": describe_signal_rejection(signal, prob_up),
             "contract": None,
             "expected_move_pct": expected_move_pct,
             "equity_edge": None,
@@ -595,6 +595,34 @@ def evaluate_signal(features, current_price, prob_up):
     }
 
 
+def describe_signal_rejection(signal, prob_up):
+    reasons = []
+    if prob_up > 0.5:
+        if prob_up < LONG_ENTRY_THRESHOLD:
+            reasons.append(
+                f"prob_up {prob_up:.2%} below long threshold {LONG_ENTRY_THRESHOLD:.0%}"
+            )
+        if signal["confidence_gap"] < MIN_CONFIDENCE_GAP:
+            reasons.append(
+                f"confidence gap {signal['confidence_gap']:.2%} below minimum {MIN_CONFIDENCE_GAP:.0%}"
+            )
+        if USE_TREND_FILTER and not signal["bullish_trend"]:
+            reasons.append("bullish trend filter not aligned")
+    else:
+        if prob_up > SHORT_ENTRY_THRESHOLD:
+            reasons.append(
+                f"prob_up {prob_up:.2%} above short threshold {SHORT_ENTRY_THRESHOLD:.0%}"
+            )
+        if signal["confidence_gap"] < MIN_CONFIDENCE_GAP:
+            reasons.append(
+                f"confidence gap {signal['confidence_gap']:.2%} below minimum {MIN_CONFIDENCE_GAP:.0%}"
+            )
+        if USE_TREND_FILTER and not signal["bearish_trend"]:
+            reasons.append("bearish trend filter not aligned")
+
+    return "; ".join(reasons) if reasons else "signal did not meet execution criteria"
+
+
 def trade_equity(ticker, account, current_price, prob_up, features):
     cash = float(account.get("cash", 0))
     context = get_equity_trade_context(ticker, cash)
@@ -602,21 +630,24 @@ def trade_equity(ticker, account, current_price, prob_up, features):
     position = context["position"]
     signal = evaluate_signal(features, current_price, prob_up)
 
-    print(f"Current position: {shares} shares")
-    print(f"Pending orders: {context['pending_count']}")
-    print(
-        f"Long/Short thresholds: {LONG_ENTRY_THRESHOLD:.0%}/{SHORT_ENTRY_THRESHOLD:.0%}"
+    ticker_print(ticker, f"Current position: {shares} shares")
+    ticker_print(ticker, f"Pending orders: {context['pending_count']}")
+    ticker_print(
+        ticker,
+        f"Long/Short thresholds: {LONG_ENTRY_THRESHOLD:.0%}/{SHORT_ENTRY_THRESHOLD:.0%}",
     )
-    print(f"Min confidence gap: {MIN_CONFIDENCE_GAP:.0%}")
-    print(f"Shortable: {context['is_shortable']}")
-    print(f"Easy to borrow: {context['is_easy_to_borrow']}")
-    print(
-        f"Trend filter: bullish={signal['bullish_trend']} bearish={signal['bearish_trend']}"
+    ticker_print(ticker, f"Min confidence gap: {MIN_CONFIDENCE_GAP:.0%}")
+    ticker_print(ticker, f"Shortable: {context['is_shortable']}")
+    ticker_print(ticker, f"Easy to borrow: {context['is_easy_to_borrow']}")
+    ticker_print(
+        ticker,
+        f"Trend filter: bullish={signal['bullish_trend']} bearish={signal['bearish_trend']}",
     )
 
     market_open = get_market_status()
     if not market_open:
-        print("\n>>> Market closed, skipping trade")
+        ticker_print(ticker, ">>> HOLD - Market closed, skipping trade")
+        log_signal("HOLD", current_price, prob_up, "UP" if prob_up > 0.5 else "DOWN")
         return
 
     prob_down = signal["prob_down"]
@@ -626,77 +657,79 @@ def trade_equity(ticker, account, current_price, prob_up, features):
         action = "BUY (LONG)"
         qty = int(context["max_notional"] / current_price)
         if qty <= 0:
-            print("\n>>> HOLD - Not enough buying power for equity long")
+            ticker_print(ticker, ">>> HOLD - Not enough buying power for equity long")
             log_signal("HOLD", current_price, prob_up, "UP")
             return
-        print(f"\n>>> {action} {qty} shares of {ticker}")
+        ticker_print(ticker, f">>> {action} {qty} shares of {ticker}")
         result = place_order(ticker, qty, "buy")
         if "error" in result:
-            print(f"    FAILED: {result.get('error')}")
+            ticker_print(ticker, f"FAILED: {result.get('error')}")
             action = "FAILED"
         else:
-            print(f"    Result: {result.get('status', result)}")
+            ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "UP")
 
     elif signal["bearish_signal"] and shares == 0 and not context["has_pending"]:
         if not ALLOW_SHORTS:
-            print("\n>>> HOLD - Short selling disabled in config")
+            ticker_print(ticker, ">>> HOLD - Short selling disabled in config")
             log_signal("HOLD", current_price, prob_up, "DOWN")
             return
         if not context["is_shortable"] or not context["is_easy_to_borrow"]:
-            print("\n>>> HOLD - Asset is not shortable or not easy to borrow")
+            ticker_print(ticker, ">>> HOLD - Asset is not shortable or not easy to borrow")
             log_signal("HOLD", current_price, prob_up, "DOWN")
             return
         action = "SHORT"
         qty = int(context["max_notional"] / current_price)
         if qty <= 0:
-            print("\n>>> HOLD - Not enough buying power for equity short")
+            ticker_print(ticker, ">>> HOLD - Not enough buying power for equity short")
             log_signal("HOLD", current_price, prob_up, "DOWN")
             return
-        print(f"\n>>> {action} {qty} shares of {ticker}")
+        ticker_print(ticker, f">>> {action} {qty} shares of {ticker}")
         result = place_order(ticker, qty, "sell")
         if "error" in result:
-            print(f"    FAILED: {result.get('error')}")
+            ticker_print(ticker, f"FAILED: {result.get('error')}")
             action = "FAILED"
         else:
-            print(f"    Result: {result.get('status', result)}")
+            ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "DOWN")
 
     elif signal["bullish_signal"] and shares > 0 and position_type == "short":
         action = "COVER SHORT"
-        print(f"\n>>> {action} {shares} shares of {ticker}")
+        ticker_print(ticker, f">>> {action} {shares} shares of {ticker}")
         result = close_position(ticker)
-        print(f"    Result: {result.get('status', result)}")
+        ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "UP")
 
     elif signal["bearish_signal"] and shares > 0 and position_type == "long":
         action = "SELL (STOP LOSS)"
-        print(f"\n>>> {action} {shares} shares of {ticker}")
+        ticker_print(ticker, f">>> {action} {shares} shares of {ticker}")
         result = close_position(ticker)
-        print(f"    Result: {result.get('status', result)}")
+        ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "DOWN")
 
     else:
         direction = "UP" if prob_up > 0.5 else "DOWN"
         action = "HOLD"
-        print(
-            f"\n>>> {action} - No clear equity signal "
-            f"(predicted: {direction}, gap: {signal['confidence_gap']:.2%})"
+        ticker_print(
+            ticker,
+            f">>> {action} - No clear equity signal "
+            f"(predicted: {direction}, gap: {signal['confidence_gap']:.2%}; "
+            f"reason: {describe_signal_rejection(signal, prob_up)})",
         )
         log_signal(action, current_price, prob_up, direction)
 
-    print(f"Position: {shares} shares of {ticker}")
+    ticker_print(ticker, f"Position: {shares} shares of {ticker}")
 
 
 def trade_option(ticker, account, current_price, prob_up, features, selected_contract=None):
     signal = evaluate_signal(features, current_price, prob_up)
     if ticker not in OPTIONS_ENABLED_UNDERLYINGS:
-        print("\n>>> HOLD - Options disabled for this underlying")
+        ticker_print(ticker, ">>> HOLD - Options disabled for this underlying")
         log_signal("HOLD", current_price, prob_up, "UP" if prob_up > 0.5 else "DOWN")
         return
 
     if not account_supports_options(account):
-        print("\n>>> HOLD - Account is not approved for options trading")
+        ticker_print(ticker, ">>> HOLD - Account is not approved for options trading")
         log_signal("HOLD", current_price, prob_up, "UP" if prob_up > 0.5 else "DOWN")
         return
 
@@ -711,14 +744,15 @@ def trade_option(ticker, account, current_price, prob_up, features, selected_con
     )
 
     held_label = contract.get("symbol") if contract else "None"
-    print(f"Current option position: {held_label} x {contracts_held}")
-    print(f"Pending option orders: {int(has_pending)}")
-    print(f"Threshold: {THRESHOLD:.0%}")
-    print(f"Options buying power: ${options_buying_power:.2f}")
+    ticker_print(ticker, f"Current option position: {held_label} x {contracts_held}")
+    ticker_print(ticker, f"Pending option orders: {int(has_pending)}")
+    ticker_print(ticker, f"Threshold: {THRESHOLD:.0%}")
+    ticker_print(ticker, f"Options buying power: ${options_buying_power:.2f}")
 
     market_open = get_market_status()
     if not market_open:
-        print("\n>>> Market closed, skipping trade")
+        ticker_print(ticker, ">>> HOLD - Market closed, skipping trade")
+        log_signal("HOLD", current_price, prob_up, "UP" if prob_up > 0.5 else "DOWN")
         return
 
     prob_down = signal["prob_down"]
@@ -726,27 +760,31 @@ def trade_option(ticker, account, current_price, prob_up, features, selected_con
     held_type = contract.get("type") if contract else None
 
     if position and held_type != desired_type and not has_pending:
-        print(f"\n>>> CLOSE OPTION {position['symbol']} x {contracts_held}")
+        ticker_print(ticker, f">>> CLOSE OPTION {position['symbol']} x {contracts_held}")
         result = close_position(position["symbol"])
-        print(f"    Result: {result.get('status', result)}")
+        ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal("CLOSE OPTION", current_price, prob_up, desired_type.upper())
         return
 
     if position:
         direction = "UP" if prob_up > 0.5 else "DOWN"
-        print(f"\n>>> HOLD - Existing {held_type} position already aligned")
+        ticker_print(ticker, f">>> HOLD - Existing {held_type} position already aligned")
         log_signal("HOLD", current_price, prob_up, direction)
         return
 
     if has_pending:
         direction = "UP" if prob_up > 0.5 else "DOWN"
-        print("\n>>> HOLD - Pending option order already exists")
+        ticker_print(ticker, ">>> HOLD - Pending option order already exists")
         log_signal("HOLD", current_price, prob_up, direction)
         return
 
     if not signal["bullish_signal"] and not signal["bearish_signal"]:
         direction = "UP" if prob_up > 0.5 else "DOWN"
-        print(f"\n>>> HOLD - No clear option signal (predicted: {direction})")
+        ticker_print(
+            ticker,
+            f">>> HOLD - No clear option signal (predicted: {direction}; "
+            f"reason: {describe_signal_rejection(signal, prob_up)})",
+        )
         log_signal("HOLD", current_price, prob_up, direction)
         return
 
@@ -754,7 +792,7 @@ def trade_option(ticker, account, current_price, prob_up, features, selected_con
         ticker, desired_type, current_price
     )
     if not contract:
-        print("\n>>> HOLD - No suitable option contract found")
+        ticker_print(ticker, ">>> HOLD - No suitable option contract found")
         log_signal("HOLD", current_price, prob_up, desired_type.upper())
         return
 
@@ -763,28 +801,29 @@ def trade_option(ticker, account, current_price, prob_up, features, selected_con
     budget = options_buying_power * OPTIONS_POSITION_SIZE
     qty = int(budget / cost_per_contract) if cost_per_contract > 0 else 0
     if qty <= 0:
-        print("\n>>> HOLD - Not enough buying power for selected option")
+        ticker_print(ticker, ">>> HOLD - Not enough buying power for selected option")
         log_signal("HOLD", current_price, prob_up, desired_type.upper())
         return
 
     action = f"BUY {desired_type.upper()}"
-    print(
+    ticker_print(
+        ticker,
         f"\n>>> {action} {qty} contract(s) of {contract['symbol']} "
-        f"(strike ${float(contract['strike_price']):.2f}, exp {contract['expiration_date']})"
+        f"(strike ${float(contract['strike_price']):.2f}, exp {contract['expiration_date']})",
     )
     result = place_order(contract["symbol"], qty, "buy", asset_class="option")
     if "error" in result:
-        print(f"    FAILED: {result.get('error')}")
+        ticker_print(ticker, f"FAILED: {result.get('error')}")
         action = "FAILED"
     else:
-        print(f"    Result: {result.get('status', result)}")
+        ticker_print(ticker, f"Result: {result.get('status', result)}")
     log_signal(action, current_price, prob_up, desired_type.upper())
 
 
 def main(ticker):
-    print("=" * 50)
-    print(f"Enhanced Alpaca Paper Trading Bot - {ticker}")
-    print("=" * 50)
+    ticker_print(ticker, "=" * 50)
+    ticker_print(ticker, f"Enhanced Alpaca Paper Trading Bot - {ticker}")
+    ticker_print(ticker, "=" * 50)
 
     if not check_alpaca_keys():
         return
@@ -793,43 +832,46 @@ def main(ticker):
     if account:
         cash = float(account.get("cash", 0))
         equity = float(account.get("portfolio_value", cash))
-        print(f"Connected - Cash: ${cash:.2f} | Equity: ${equity:.2f}")
+        ticker_print(ticker, f"Connected - Cash: ${cash:.2f} | Equity: ${equity:.2f}")
         if account.get("options_buying_power") is not None:
-            print(
+            ticker_print(
+                ticker,
                 "Options - "
                 f"Buying Power: ${float(account.get('options_buying_power') or 0):.2f} | "
                 f"Approved Level: {account.get('options_approved_level', 0)} | "
-                f"Trading Level: {account.get('options_trading_level', 0)}"
+                f"Trading Level: {account.get('options_trading_level', 0)}",
             )
     else:
-        print("ERROR: Could not connect to Alpaca")
-        print("Check your API keys in .env")
+        ticker_print(ticker, "ERROR: Could not connect to Alpaca")
+        ticker_print(ticker, "Check your API keys in .env")
         return
 
     classifier, scaler = load_models(ticker)
 
-    print("\nFetching market data with technical indicators...")
+    ticker_print(ticker, "Fetching market data with technical indicators...")
     raw_data = get_yfinance_data(ticker)
     features = prepare_features(raw_data)
 
     current_price = raw_data["Close"].iloc[-1]
     prob_up = predict_direction(classifier, scaler, features)
 
-    print(f"Current price: ${current_price:.2f}")
-    print(f"Probability of UP: {prob_up:.2%}")
-    print(f"Probability of DOWN: {1 - prob_up:.2%}")
+    ticker_print(ticker, f"Current price: ${current_price:.2f}")
+    ticker_print(ticker, f"Probability of UP: {prob_up:.2%}")
+    ticker_print(ticker, f"Probability of DOWN: {1 - prob_up:.2%}")
     if TRADE_MODE == "auto":
         decision = choose_trade_mode(ticker, account, current_price, prob_up, features)
-        print(
+        ticker_print(
+            ticker,
             f"Auto mode: {decision['mode'].upper()} | "
             f"Expected move: {decision['expected_move_pct']:.2%} | "
-            f"Reason: {decision['reason']}"
+            f"Reason: {decision['reason']}",
         )
         if decision["mode"] == "hold":
             log_signal("HOLD", current_price, prob_up, decision["direction"])
-            print(
-                "\n>>> HOLD - Auto mode rejected trade before execution "
-                f"(predicted: {decision['direction']})"
+            ticker_print(
+                ticker,
+                ">>> HOLD - Auto mode rejected trade before execution "
+                f"(predicted: {decision['direction']})",
             )
         elif decision["mode"] == "option":
             trade_option(
