@@ -8,7 +8,7 @@ import warnings
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -62,6 +62,7 @@ ALPACA_KEY = os.getenv("ALPACA_KEY")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 
 HEADERS = {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
+NON_EXECUTING_ORDER_STATUSES = {"canceled", "expired", "rejected"}
 
 
 def compute_rsi(prices, period=14):
@@ -256,6 +257,16 @@ def get_open_orders():
     return []
 
 
+def get_orders(status="all", limit=500, after=None):
+    params = {"status": status, "limit": limit, "direction": "desc", "nested": "true"}
+    if after:
+        params["after"] = after
+    resp = requests.get(f"{ALPACA_URL}/v2/orders", headers=HEADERS, params=params)
+    if resp.status_code == 200:
+        return resp.json()
+    return []
+
+
 def place_order(symbol, qty, side, asset_class="us_equity"):
     order = {
         "symbol": symbol,
@@ -292,6 +303,41 @@ def get_option_contract(symbol_or_id):
     if resp.status_code == 200:
         return resp.json()
     return None
+
+
+def get_today_order_window_start():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
+
+
+def order_belongs_to_ticker(order, ticker, option_contract_cache):
+    if order.get("symbol") == ticker:
+        return True
+
+    if order.get("asset_class") != "option":
+        return False
+
+    contract_symbol = order.get("symbol")
+    if not contract_symbol:
+        return False
+
+    if contract_symbol not in option_contract_cache:
+        option_contract_cache[contract_symbol] = get_option_contract(contract_symbol)
+
+    contract = option_contract_cache.get(contract_symbol)
+    return bool(contract and contract.get("underlying_symbol") == ticker)
+
+
+def has_traded_today(ticker):
+    option_contract_cache = {}
+    today_orders = get_orders(after=get_today_order_window_start())
+
+    for order in today_orders:
+        if order.get("status") in NON_EXECUTING_ORDER_STATUSES:
+            continue
+        if order_belongs_to_ticker(order, ticker, option_contract_cache):
+            return True
+
+    return False
 
 
 def list_option_contracts(ticker, contract_type, current_price):
@@ -844,6 +890,13 @@ def main(ticker):
     else:
         ticker_print(ticker, "ERROR: Could not connect to Alpaca")
         ticker_print(ticker, "Check your API keys in .env")
+        return
+
+    if has_traded_today(ticker):
+        ticker_print(
+            ticker,
+            ">>> HOLD - Already placed a non-canceled order for this ticker today",
+        )
         return
 
     classifier, scaler = load_models(ticker)
