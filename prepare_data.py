@@ -164,11 +164,12 @@ def feature_selection(df):
 
     features = df[feature_cols]
 
-    # Create directional labels (1 = next day close > today close, 0 = otherwise)
-    labels = (df["Close"].shift(-1) > df["Close"]).astype(int)
+    # Create directional labels for the current session:
+    # 1 when today's close finishes above yesterday's close.
+    labels = (df["Close"] > df["Close"].shift(1)).astype(int)
 
     print(f"  Total features: {len(feature_cols)}")
-    print(f"  Target: Next day direction (up=1, down=0)")
+    print(f"  Target: Current day direction vs previous close (up=1, down=0)")
 
     return features, labels
 
@@ -193,7 +194,7 @@ def create_sequences(data, labels, look_back=LOOK_BACK):
     X, y = [], []
     y_direction = []
 
-    for i in range(look_back, len(data) - 1):
+    for i in range(look_back, len(data)):
         window = data[i - look_back : i]
         target = data[i, 3]  # Close price
         direction = labels.iloc[i] if hasattr(labels, "iloc") else labels[i]
@@ -333,8 +334,8 @@ def download_and_process_ticker(ticker, period=PERIOD, look_back=LOOK_BACK):
     ]
     features_df = df[feature_cols]
 
-    # Create directional labels
-    labels = (df["Close"].shift(-1) > df["Close"]).astype(int)
+    # Create directional labels for the current session relative to the previous close.
+    labels = (df["Close"] > df["Close"].shift(1)).astype(int)
 
     # Normalize data
     print("  Applying Min-Max Scaling...")
@@ -353,7 +354,7 @@ def download_and_process_ticker(ticker, period=PERIOD, look_back=LOOK_BACK):
     print(f"  Creating sequences with look-back window of {look_back}...")
     X, y, y_direction = [], [], []
 
-    for i in range(look_back, len(scaled_data) - 1):
+    for i in range(look_back, len(scaled_data)):
         window = scaled_data[i - look_back : i]
         target = scaled_data[i, 3]  # Close price
         direction = labels.iloc[i] if hasattr(labels, "iloc") else labels[i]

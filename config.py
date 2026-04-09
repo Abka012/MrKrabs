@@ -17,9 +17,19 @@ DEFAULT_TICKER = "SPY"
 # Trading settings
 POSITION_SIZE = 0.05  # 5% of cash per trade
 THRESHOLD = 0.45  # Legacy threshold retained for compatibility
-LONG_ENTRY_THRESHOLD = 0.53
-SHORT_ENTRY_THRESHOLD = 0.47
-MIN_CONFIDENCE_GAP = 0.03
+LONG_ENTRY_THRESHOLD = 0.52
+SHORT_ENTRY_THRESHOLD = 0.48
+MIN_CONFIDENCE_GAP = 0.02
+
+# Risk management
+STOP_LOSS_PCT = 0.03  # 3% stop-loss
+TAKE_PROFIT_PCT = 0.06  # 6% take-profit
+MAX_HOLD_DAYS = 20  # Max days to hold a position
+
+# Auto-tuning settings
+AUTO_TUNE_ENABLED = True
+MIN_SIGNALS_PER_TICKER = 30
+TARGET_WIN_RATE = 0.50
 TRADE_MODE = "equity"  # equity, option, or auto
 ALLOW_SHORTS = True
 USE_TREND_FILTER = False

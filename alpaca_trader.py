@@ -9,6 +9,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -38,12 +39,15 @@ LOOK_BACK = 60
 # TICKER is now handled via config and command line argument
 THRESHOLD = config.THRESHOLD  # Classifier threshold
 POSITION_SIZE = getattr(config, "POSITION_SIZE", 0.15)
-LONG_ENTRY_THRESHOLD = getattr(config, "LONG_ENTRY_THRESHOLD", 0.58)
-SHORT_ENTRY_THRESHOLD = getattr(config, "SHORT_ENTRY_THRESHOLD", 0.42)
-MIN_CONFIDENCE_GAP = getattr(config, "MIN_CONFIDENCE_GAP", 0.08)
+LONG_ENTRY_THRESHOLD = getattr(config, "LONG_ENTRY_THRESHOLD", 0.52)
+SHORT_ENTRY_THRESHOLD = getattr(config, "SHORT_ENTRY_THRESHOLD", 0.48)
+MIN_CONFIDENCE_GAP = getattr(config, "MIN_CONFIDENCE_GAP", 0.02)
+STOP_LOSS_PCT = getattr(config, "STOP_LOSS_PCT", 0.03)
+TAKE_PROFIT_PCT = getattr(config, "TAKE_PROFIT_PCT", 0.06)
+MAX_HOLD_DAYS = getattr(config, "MAX_HOLD_DAYS", 20)
 TRADE_MODE = getattr(config, "TRADE_MODE", "equity").lower()
 ALLOW_SHORTS = getattr(config, "ALLOW_SHORTS", True)
-USE_TREND_FILTER = getattr(config, "USE_TREND_FILTER", True)
+USE_TREND_FILTER = getattr(config, "USE_TREND_FILTER", False)
 OPTIONS_POSITION_SIZE = getattr(config, "OPTIONS_POSITION_SIZE", 0.05)
 OPTIONS_ENABLED_UNDERLYINGS = set(
     getattr(config, "OPTIONS_ENABLED_UNDERLYINGS", config.TICKERS)
@@ -63,6 +67,17 @@ ALPACA_SECRET = os.getenv("ALPACA_SECRET")
 
 HEADERS = {"APCA-API-KEY-ID": ALPACA_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET}
 NON_EXECUTING_ORDER_STATUSES = {"canceled", "expired", "rejected"}
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def get_ticker_thresholds(ticker):
+    """Load tuned thresholds from JSON, fallback to config defaults"""
+    tuned_file = os.path.join(config.get_model_dir(ticker), "tuned_thresholds.json")
+    if os.path.exists(tuned_file):
+        with open(tuned_file) as f:
+            tuned = json.load(f)
+        return tuned["long_entry"], tuned["min_conf_gap"]
+    return LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
 
 
 def compute_rsi(prices, period=14):
@@ -157,6 +172,36 @@ def get_yfinance_data(ticker, days=120):
     return df
 
 
+def get_market_day(ts):
+    ts = pd.Timestamp(ts)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize(MARKET_TIMEZONE)
+    else:
+        ts = ts.tz_convert(MARKET_TIMEZONE)
+    return ts.date()
+
+
+def prepare_live_market_context(raw_data):
+    if len(raw_data) < LOOK_BACK:
+        raise ValueError(
+            f"Need at least {LOOK_BACK} daily rows, but only found {len(raw_data)}"
+        )
+
+    latest_row = raw_data.iloc[-1]
+    latest_market_day = get_market_day(raw_data.index[-1])
+    today_market_day = datetime.now(MARKET_TIMEZONE).date()
+
+    if latest_market_day >= today_market_day and len(raw_data) > LOOK_BACK:
+        signal_data = raw_data.iloc[:-1].copy()
+        current_price = float(latest_row["Close"])
+    else:
+        signal_data = raw_data.copy()
+        current_price = float(signal_data["Close"].iloc[-1])
+
+    reference_close = float(signal_data["Close"].iloc[-1])
+    return signal_data, current_price, reference_close
+
+
 def prepare_features(df):
     df = add_technical_indicators(df)
 
@@ -248,6 +293,77 @@ def get_market_status():
     if resp.status_code == 200:
         return resp.json().get("is_open", False)
     return False
+
+
+POSITION_STATE_FILE = os.path.join(PROJECT_DIR, "position_state.json")
+
+
+def load_position_state():
+    if os.path.exists(POSITION_STATE_FILE):
+        with open(POSITION_STATE_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_position_state(state):
+    with open(POSITION_STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def check_risk_exits(ticker, current_price):
+    """Check stop-loss, take-profit, and max hold day exits"""
+    state = load_position_state()
+    
+    if ticker not in state or "entry_price" not in state[ticker]:
+        return None, None
+    
+    entry_price = state[ticker]["entry_price"]
+    entry_date = state[ticker].get("entry_date")
+    position_side = state[ticker].get("side", "long")
+    days_held = (datetime.now().date() - datetime.strptime(entry_date, "%Y-%m-%d").date()).days if entry_date else 0
+    
+    price_change = (current_price - entry_price) / entry_price
+    
+    exit_reason = None
+    
+    if position_side == "long":
+        if price_change <= -STOP_LOSS_PCT:
+            exit_reason = "STOP_LOSS"
+        elif price_change >= TAKE_PROFIT_PCT:
+            exit_reason = "TAKE_PROFIT"
+    elif position_side == "short":
+        if price_change >= STOP_LOSS_PCT:
+            exit_reason = "STOP_LOSS"
+        elif price_change <= -TAKE_PROFIT_PCT:
+            exit_reason = "TAKE_PROFIT"
+    
+    if exit_reason:
+        return exit_reason, state[ticker]
+    
+    if days_held >= MAX_HOLD_DAYS:
+        return "MAX_HOLD", state[ticker]
+    
+    return None, None
+
+
+def update_position_state(ticker, side, entry_price, qty):
+    """Update position state after trade"""
+    state = load_position_state()
+    state[ticker] = {
+        "side": side,
+        "entry_price": entry_price,
+        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+        "qty": qty,
+    }
+    save_position_state(state)
+
+
+def clear_position_state(ticker):
+    """Clear position state after closing"""
+    state = load_position_state()
+    if ticker in state:
+        del state[ticker]
+        save_position_state(state)
 
 
 def get_open_orders():
@@ -699,6 +815,18 @@ def trade_equity(ticker, account, current_price, prob_up, features):
     prob_down = signal["prob_down"]
     position_type = position.get("side", "flat") if position else "flat"
 
+    if shares > 0:
+        exit_reason, pos_state = check_risk_exits(ticker, current_price)
+        if exit_reason:
+            action = f"EXIT ({exit_reason})"
+            ticker_print(ticker, f">>> {action} {shares} shares of {ticker}")
+            result = close_position(ticker)
+            if result.get("status") in ["filled", "closed", "ok"]:
+                clear_position_state(ticker)
+            ticker_print(ticker, f"Result: {result.get('status', result)}")
+            log_signal(action, current_price, prob_up, "UP" if position_type == "short" else "DOWN")
+            return
+
     if signal["bullish_signal"] and shares == 0 and not context["has_pending"]:
         action = "BUY (LONG)"
         qty = int(context["max_notional"] / current_price)
@@ -713,6 +841,8 @@ def trade_equity(ticker, account, current_price, prob_up, features):
             action = "FAILED"
         else:
             ticker_print(ticker, f"Result: {result.get('status', result)}")
+            if result.get("status") in ["filled", "accepted", "new", "ok"]:
+                update_position_state(ticker, "long", current_price, qty)
         log_signal(action, current_price, prob_up, "UP")
 
     elif signal["bearish_signal"] and shares == 0 and not context["has_pending"]:
@@ -737,12 +867,16 @@ def trade_equity(ticker, account, current_price, prob_up, features):
             action = "FAILED"
         else:
             ticker_print(ticker, f"Result: {result.get('status', result)}")
+            if result.get("status") in ["filled", "accepted", "new", "ok"]:
+                update_position_state(ticker, "short", current_price, qty)
         log_signal(action, current_price, prob_up, "DOWN")
 
     elif signal["bullish_signal"] and shares > 0 and position_type == "short":
         action = "COVER SHORT"
         ticker_print(ticker, f">>> {action} {shares} shares of {ticker}")
         result = close_position(ticker)
+        if result.get("status") in ["filled", "closed", "ok"]:
+            clear_position_state(ticker)
         ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "UP")
 
@@ -750,6 +884,8 @@ def trade_equity(ticker, account, current_price, prob_up, features):
         action = "SELL (STOP LOSS)"
         ticker_print(ticker, f">>> {action} {shares} shares of {ticker}")
         result = close_position(ticker)
+        if result.get("status") in ["filled", "closed", "ok"]:
+            clear_position_state(ticker)
         ticker_print(ticker, f"Result: {result.get('status', result)}")
         log_signal(action, current_price, prob_up, "DOWN")
 
@@ -871,6 +1007,12 @@ def main(ticker):
     ticker_print(ticker, f"Enhanced Alpaca Paper Trading Bot - {ticker}")
     ticker_print(ticker, "=" * 50)
 
+    # Load tuned thresholds for this ticker
+    long_entry, min_gap = get_ticker_thresholds(ticker)
+    global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
+    LONG_ENTRY_THRESHOLD = long_entry
+    MIN_CONFIDENCE_GAP = min_gap
+
     if not check_alpaca_keys():
         return
 
@@ -903,14 +1045,16 @@ def main(ticker):
 
     ticker_print(ticker, "Fetching market data with technical indicators...")
     raw_data = get_yfinance_data(ticker)
-    features = prepare_features(raw_data)
+    signal_data, current_price, reference_close = prepare_live_market_context(raw_data)
+    features = prepare_features(signal_data)
 
-    current_price = raw_data["Close"].iloc[-1]
     prob_up = predict_direction(classifier, scaler, features)
 
     ticker_print(ticker, f"Current price: ${current_price:.2f}")
+    ticker_print(ticker, f"Previous close: ${reference_close:.2f}")
     ticker_print(ticker, f"Probability of UP: {prob_up:.2%}")
     ticker_print(ticker, f"Probability of DOWN: {1 - prob_up:.2%}")
+    ticker_print(ticker, f"Thresholds: long={LONG_ENTRY_THRESHOLD:.2f}, min_gap={MIN_CONFIDENCE_GAP:.2f}")
     if TRADE_MODE == "auto":
         decision = choose_trade_mode(ticker, account, current_price, prob_up, features)
         ticker_print(

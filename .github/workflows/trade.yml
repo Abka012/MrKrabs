@@ -3,7 +3,7 @@ name: Alpaca Trade Bot
 on:
   workflow_dispatch:
   schedule:
-    - cron: "35 13 * * 1-5"
+    - cron: "00 14 * * 1-5"
 
 concurrency:
   group: alpaca-trade-bot

@@ -7,13 +7,12 @@ LSTM-based multi-ticker stock trading bot that predicts price movements for mult
 - **Multi-Ticker Support**: Trade multiple stocks simultaneously with ticker-specific data and models
 - **Multithreaded Execution**: Run all tickers in parallel for faster execution
 - **25 Technical Indicators**: RSI, MACD, Bollinger Bands, SMAs, ATR, Momentum, Volume ratios
-- **Multiple Models**: BiLSTM classifier (58% accuracy), XGBoost, LSTM regression
+- **BiLSTM Classifier**: Directional model predicting UP/DOWN (~55-58% accuracy)
+- **Learned Auto Mode**: Per-ticker mode selector (equity vs option) trained on historical signals
 - **Short Selling**: Equity shorts only when Alpaca marks the asset shortable and easy-to-borrow
 - **Options Mode**: Optional single-leg call/put trading using Alpaca option contracts
-- **Market Hours Check**: Only executes trades when market is open (9:30 AM - 4:00 PM ET)
-- **Directional Trading**: Classifier predicts UP/DOWN with probability threshold
-- **Automatic Trading**: Runs on cron every 5 minutes during market hours
-- **Multiple Trades Per Day**: No limit on trades per day
+- **One Trade Per Day**: Places at most one order per ticker per day; manages risk exits (stop-loss, take-profit, max hold) intraday
+- **GitHub Actions Scheduling**: Runs once daily ~10:00 AM ET on weekdays via `.github/workflows/trade.yml`
 
 ## Project Structure
 
@@ -96,15 +95,41 @@ Edit [config.py](config.py) for centralized settings:
 
 ```python
 TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "NVDA"]
-THRESHOLD = 0.45      # Classifier threshold (45% triggers trade)
-POSITION_SIZE = 0.15  # 15% of cash per trade
-LOOK_BACK = 60        # 60-day sequence window
-TRADE_MODE = "equity" # or "option" or "auto"
+DEFAULT_TICKER = "SPY"
+
+# Entry thresholds
+LONG_ENTRY_THRESHOLD = 0.52    # Prob(UP) threshold for long entries
+SHORT_ENTRY_THRESHOLD = 0.48   # Prob(UP) threshold for short entries
+MIN_CONFIDENCE_GAP = 0.02      # Minimum confidence gap required
+
+# Risk management
+POSITION_SIZE = 0.05           # 5% of cash per trade
+STOP_LOSS_PCT = 0.03           # 3% stop-loss
+TAKE_PROFIT_PCT = 0.06         # 6% take-profit
+MAX_HOLD_DAYS = 20             # Max days to hold a position
+
+# Trade mode
+TRADE_MODE = "equity"          # "equity", "option", or "auto"
 ALLOW_SHORTS = True
-OPTIONS_POSITION_SIZE = 0.05
+USE_TREND_FILTER = False
+
+# Options
+OPTIONS_POSITION_SIZE = 0.05   # 5% of options buying power per trade
 OPTIONS_MIN_DTE = 7
 OPTIONS_MAX_DTE = 45
+OPTIONS_STRIKE_WINDOW = 0.08   # +/- 8% around spot
+
+# Auto mode
 AUTO_MODE_MIN_CONFIDENCE_GAP = 0.05
+AUTO_MODE_ATR_MULTIPLIER = 1.0
+AUTO_MODE_OPTION_COST_PENALTY = 0.015
+AUTO_MODE_MAX_OPTION_LEVERAGE = 4.0
+
+# Model
+LOOK_BACK = 60                 # 60-day sequence window
+PERIOD = "10y"                 # 10 years of historical data
+EPOCHS = 50
+BATCH_SIZE = 32
 ```
 
 ## Ticker-Specific Directories
@@ -193,32 +218,38 @@ python alpaca_trader.py --ticker SPY --mode auto
 
 ## Scheduling
 
-Add to crontab for execution every 5 minutes during market hours:
-```bash
-crontab -e
-*/5 9-16 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+### GitHub Actions (Recommended)
+
+The repo includes a workflow at `.github/workflows/trade.yml` that runs once daily on weekdays:
+
+```yaml
+schedule:
+  - cron: "00 14 * * 1-5"  # 10:00 AM ET (14:00 UTC during EDT)
 ```
 
-This runs the bot every 5 minutes from 9 AM to 4 PM on weekdays (Mon-Fri) for ALL tickers in parallel.
+This executes `python alpaca_trader.py --all --mode auto` on an Ubuntu runner with your Alpaca secrets stored as GitHub repository secrets.
 
-### Manual Run
+**Required secrets:**
+- `ALPACA_URL` — e.g. `https://paper-api.alpaca.markets`
+- `ALPACA_KEY` — your API key
+- `ALPACA_SECRET` — your API secret
 
-To test without cron:
+### Local Cron (Alternative)
+
+If you prefer running locally, add to crontab:
+
+```bash
+crontab -e
+00 14 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+```
+
+Or run manually:
+
 ```bash
 ./run_bot.sh
 ```
 
-For automatic trade execution:
-1. Get free paper trading keys at https://app.alpaca.markets/paper
-2. Add to `.env`:
-   ```
-   ALPACA_URL=https://paper-api.alpaca.markets
-   ALPACA_KEY=your_key
-   ALPACA_SECRET=your_secret
-   ```
-3. Run: `python alpaca_trader.py`
-
-**Note**: Trades only execute when market is open. Use `run_bot.sh` with cron for 5-minute execution.
+**Note**: The bot places at most one order per ticker per day. Subsequent runs on the same day will skip with "Already placed a non-canceled order for this ticker today." Risk exits (stop-loss, take-profit, max hold) are still checked on every run.
 
 ## Trade Modes
 
@@ -269,3 +300,16 @@ For automatic trade execution:
    ALPACA_SECRET=your_secret
    ```
 3. Run: `python alpaca_trader.py --ticker SPY` or `python alpaca_trader.py --all`
+
+### Risk Management
+
+The bot manages risk through:
+- **Stop-Loss**: 3% adverse move closes the position
+- **Take-Profit**: 6% favorable move locks in gains
+- **Max Hold Days**: Positions auto-close after 20 trading days
+- **One Order Per Day**: Prevents overtrading; signal resets daily
+- **Trend Filter** (optional): Requires SMA alignment when `USE_TREND_FILTER = True`
+
+### Per-Ticker Tuned Thresholds
+
+After running `backtest.py`, the bot auto-tunes per-ticker entry thresholds and stores them in `models/<ticker>/tuned_thresholds.json`. These override the global `LONG_ENTRY_THRESHOLD` and `MIN_CONFIDENCE_GAP` when present.

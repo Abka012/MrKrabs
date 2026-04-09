@@ -31,10 +31,16 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 LOOK_BACK = 60
 THRESHOLD = 0.45  # Classifier threshold (45% - trade on any upward signal)
-LONG_ENTRY_THRESHOLD = getattr(config, "LONG_ENTRY_THRESHOLD", 0.58)
-SHORT_ENTRY_THRESHOLD = getattr(config, "SHORT_ENTRY_THRESHOLD", 0.42)
-MIN_CONFIDENCE_GAP = getattr(config, "MIN_CONFIDENCE_GAP", 0.08)
-USE_TREND_FILTER = getattr(config, "USE_TREND_FILTER", True)
+LONG_ENTRY_THRESHOLD = getattr(config, "LONG_ENTRY_THRESHOLD", 0.52)
+SHORT_ENTRY_THRESHOLD = getattr(config, "SHORT_ENTRY_THRESHOLD", 0.48)
+MIN_CONFIDENCE_GAP = getattr(config, "MIN_CONFIDENCE_GAP", 0.02)
+USE_TREND_FILTER = getattr(config, "USE_TREND_FILTER", False)
+STOP_LOSS_PCT = getattr(config, "STOP_LOSS_PCT", 0.03)
+TAKE_PROFIT_PCT = getattr(config, "TAKE_PROFIT_PCT", 0.06)
+MAX_HOLD_DAYS = getattr(config, "MAX_HOLD_DAYS", 20)
+AUTO_TUNE_ENABLED = getattr(config, "AUTO_TUNE_ENABLED", True)
+MIN_SIGNALS_PER_TICKER = getattr(config, "MIN_SIGNALS_PER_TICKER", 30)
+TARGET_WIN_RATE = getattr(config, "TARGET_WIN_RATE", 0.50)
 SELECTOR_FEATURE_COLUMNS = [
     "prob_up",
     "prob_down",
@@ -183,15 +189,15 @@ def predict_directions(model, scaler, raw_df, look_back=LOOK_BACK):
     probabilities = []
     actual_directions = []
 
-    for i in range(look_back, len(scaled_features) - 1):
+    for i in range(look_back, len(scaled_features)):
         seq = scaled_features[i - look_back : i].reshape(1, look_back, 25)
         prob = model.predict(seq, verbose=0)[0, 0]
         probabilities.append(prob)
 
-        # Actual direction: price went up or down next day
-        current_price = raw_df["Close"].iloc[i]
-        next_price = raw_df["Close"].iloc[i + 1]
-        actual_directions.append(1 if next_price > current_price else 0)
+        # Actual direction for the predicted session: today's close vs yesterday's close.
+        previous_close = raw_df["Close"].iloc[i - 1]
+        current_close = raw_df["Close"].iloc[i]
+        actual_directions.append(1 if current_close > previous_close else 0)
 
     return np.array(probabilities), np.array(actual_directions)
 
@@ -207,21 +213,25 @@ def backtest_classifier(
     trades = []
     portfolio_value = [capital]
 
+    entry_price = None
+    entry_day = None
+
     for i in range(len(probabilities)):
         prob_up = probabilities[i]
         prob_down = 1 - prob_up
         current_price = prices[i]
         row = features_df.iloc[i]
         confidence_gap = abs(prob_up - 0.5)
-        bullish_trend = (
-            current_price > float(row.get("SMA_20", current_price))
-            and float(row.get("SMA_20", current_price))
-            >= float(row.get("SMA_50", current_price))
+        reference_price = float(row.get("Close", current_price))
+        bullish_trend = reference_price > float(
+            row.get("SMA_20", reference_price)
+        ) and float(row.get("SMA_20", reference_price)) >= float(
+            row.get("SMA_50", reference_price)
         )
-        bearish_trend = (
-            current_price < float(row.get("SMA_20", current_price))
-            and float(row.get("SMA_20", current_price))
-            <= float(row.get("SMA_50", current_price))
+        bearish_trend = reference_price < float(
+            row.get("SMA_20", reference_price)
+        ) and float(row.get("SMA_20", reference_price)) <= float(
+            row.get("SMA_50", reference_price)
         )
         bullish_signal = (
             prob_up >= LONG_ENTRY_THRESHOLD
@@ -234,11 +244,44 @@ def backtest_classifier(
             and (bearish_trend or not USE_TREND_FILTER)
         )
 
-        # Trading logic with classifier
+        should_exit = False
+        exit_reason = None
+
+        if position != 0 and entry_price is not None:
+            price_change = (current_price - entry_price) / entry_price
+            if position > 0:
+                if price_change <= -STOP_LOSS_PCT:
+                    should_exit = True
+                    exit_reason = "STOP_LOSS"
+                elif price_change >= TAKE_PROFIT_PCT:
+                    should_exit = True
+                    exit_reason = "TAKE_PROFIT"
+            else:
+                if price_change >= STOP_LOSS_PCT:
+                    should_exit = True
+                    exit_reason = "STOP_LOSS"
+                elif price_change <= -TAKE_PROFIT_PCT:
+                    should_exit = True
+                    exit_reason = "TAKE_PROFIT"
+
+            if entry_day is not None and (i - entry_day) >= MAX_HOLD_DAYS:
+                should_exit = True
+                exit_reason = "MAX_HOLD"
+
+        if should_exit:
+            if position > 0:
+                capital = capital + (position * current_price)
+                trades.append(("SELL", i, current_price, exit_reason))
+            elif position < 0:
+                shares = abs(position)
+                capital = capital - (shares * current_price)
+                trades.append(("COVER", i, current_price, exit_reason))
+            position = 0
+            entry_price = None
+            entry_day = None
+
         if bullish_signal and position <= 0:
-            # Enter LONG
             if position < 0:
-                # Cover short first
                 shares = abs(position)
                 capital = capital - (shares * current_price)
                 trades.append(("COVER", i, current_price))
@@ -248,11 +291,11 @@ def backtest_classifier(
             position = shares
             capital = capital - (shares * current_price)
             trades.append(("LONG", i, current_price))
+            entry_price = current_price
+            entry_day = i
 
         elif bearish_signal and position >= 0:
-            # Enter SHORT
             if position > 0:
-                # Sell long first
                 capital = capital + (position * current_price)
                 trades.append(("SELL", i, current_price))
                 position = 0
@@ -261,19 +304,9 @@ def backtest_classifier(
             position = -shares
             capital = capital + (shares * current_price)
             trades.append(("SHORT", i, current_price))
+            entry_price = current_price
+            entry_day = i
 
-        elif (bullish_signal and position < 0) or (bearish_signal and position > 0):
-            # Exit positions
-            if position > 0:
-                capital = capital + (position * current_price)
-                trades.append(("SELL", i, current_price))
-            elif position < 0:
-                shares = abs(position)
-                capital = capital - (shares * current_price)
-                trades.append(("COVER", i, current_price))
-            position = 0
-
-        # Calculate portfolio value
         if position != 0:
             value = capital + (position * current_price)
         else:
@@ -295,23 +328,265 @@ def backtest_classifier(
     return capital, trades, portfolio_value
 
 
+def analyze_model_confidence(probabilities, actuals):
+    """Analyze model confidence distribution"""
+    mean_confidence = np.mean(np.abs(probabilities - 0.5)) * 2
+    std_confidence = np.std(np.abs(probabilities - 0.5)) * 2
+    
+    accuracy = (predictions := (probabilities > 0.5).astype(int)) == actuals
+    accuracy_at_50 = accuracy.mean()
+    accuracy_at_52 = (probabilities >= 0.52).astype(int) == actuals
+    accuracy_at_54 = (probabilities >= 0.54).astype(int) == actuals
+    
+    high_conf_count = np.sum(np.abs(probabilities - 0.5) >= 0.02)
+    very_high_conf_count = np.sum(np.abs(probabilities - 0.5) >= 0.04)
+    
+    return {
+        "mean_confidence": mean_confidence,
+        "std_confidence": std_confidence,
+        "accuracy_at_50": accuracy_at_50,
+        "accuracy_at_52": accuracy_at_52.mean() if len(accuracy_at_52) > 0 else 0,
+        "accuracy_at_54": accuracy_at_54.mean() if len(accuracy_at_54) > 0 else 0,
+        "high_conf_signals": high_conf_count,
+        "very_high_conf_signals": very_high_conf_count,
+    }
+
+
+def run_backtest_with_thresholds(probabilities, prices, features_df, long_entry, short_entry, min_conf_gap):
+    """Run backtest with specific thresholds - returns metrics"""
+    initial_capital = 10000
+    capital = initial_capital
+    position = 0
+    trades = []
+    portfolio_value = [capital]
+
+    entry_price = None
+    entry_day = None
+
+    for i in range(len(probabilities)):
+        prob_up = probabilities[i]
+        current_price = prices[i]
+        row = features_df.iloc[i]
+        confidence_gap = abs(prob_up - 0.5)
+
+        bullish_signal = prob_up >= long_entry and confidence_gap >= min_conf_gap
+        bearish_signal = prob_up <= short_entry and confidence_gap >= min_conf_gap
+
+        should_exit = False
+        exit_reason = None
+
+        if position != 0 and entry_price is not None:
+            price_change = (current_price - entry_price) / entry_price
+            if position > 0:
+                if price_change <= -STOP_LOSS_PCT:
+                    should_exit = True
+                    exit_reason = "STOP_LOSS"
+                elif price_change >= TAKE_PROFIT_PCT:
+                    should_exit = True
+                    exit_reason = "TAKE_PROFIT"
+            else:
+                if price_change >= STOP_LOSS_PCT:
+                    should_exit = True
+                    exit_reason = "STOP_LOSS"
+                elif price_change <= -TAKE_PROFIT_PCT:
+                    should_exit = True
+                    exit_reason = "TAKE_PROFIT"
+
+            if entry_day is not None and (i - entry_day) >= MAX_HOLD_DAYS:
+                should_exit = True
+                exit_reason = "MAX_HOLD"
+
+        if should_exit:
+            if position > 0:
+                capital = capital + (position * current_price)
+                trades.append(("SELL", i, current_price, exit_reason))
+            elif position < 0:
+                shares = abs(position)
+                capital = capital - (shares * current_price)
+                trades.append(("COVER", i, current_price, exit_reason))
+            position = 0
+            entry_price = None
+            entry_day = None
+
+        if bullish_signal and position <= 0:
+            if position < 0:
+                shares = abs(position)
+                capital = capital - (shares * current_price)
+                trades.append(("COVER", i, current_price))
+                position = 0
+
+            shares = int((capital * 0.15) / current_price)
+            if shares > 0:
+                position = shares
+                capital = capital - (shares * current_price)
+                trades.append(("LONG", i, current_price))
+                entry_price = current_price
+                entry_day = i
+
+        elif bearish_signal and position >= 0:
+            if position > 0:
+                capital = capital + (position * current_price)
+                trades.append(("SELL", i, current_price))
+                position = 0
+
+            shares = int((capital * 0.15) / current_price)
+            if shares > 0:
+                position = -shares
+                capital = capital + (shares * current_price)
+                trades.append(("SHORT", i, current_price))
+                entry_price = current_price
+                entry_day = i
+
+        if position != 0:
+            value = capital + (position * current_price)
+        else:
+            value = capital
+        portfolio_value.append(value)
+
+    if position != 0:
+        final_price = prices[-1]
+        if position > 0:
+            capital = capital + (position * final_price)
+            trades.append(("SELL", len(probabilities) - 1, final_price))
+        elif position < 0:
+            shares = abs(position)
+            capital = capital - (shares * final_price)
+            trades.append(("COVER", len(probabilities) - 1, final_price))
+        portfolio_value[-1] = capital
+
+    metrics = calculate_metrics(portfolio_value, trades)
+    return metrics, trades, portfolio_value
+
+
+def auto_tune_thresholds(ticker, probabilities, actuals, prices, features_df):
+    """Find optimal thresholds by testing combinations - optimize for Sharpe"""
+    print(f"\nAuto-tuning thresholds for {ticker}...")
+    
+    analysis = analyze_model_confidence(probabilities, actuals)
+    print(f"  Model accuracy: {analysis['accuracy_at_50']:.2%}")
+    print(f"  High confidence signals: {analysis['high_conf_signals']}")
+    
+    best_sharpe = -float('inf')
+    best_config = None
+    best_metrics = None
+
+    for long_entry in np.arange(0.50, 0.56, 0.01):
+        short_entry = 1.0 - long_entry
+        for min_conf_gap in np.arange(0.00, 0.06, 0.01):
+            metrics, trades, _ = run_backtest_with_thresholds(
+                probabilities, prices, features_df, 
+                long_entry, short_entry, min_conf_gap
+            )
+            
+            total_trades = metrics.get("Total Trades", 0)
+            total_return = float(metrics.get("Total Return", "0%").replace("%", "")) / 100
+            sharpe = float(metrics.get("Sharpe Ratio", "-999"))
+            
+            if total_return > 0 and total_trades >= MIN_SIGNALS_PER_TICKER:
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_config = {
+                        "long_entry": round(long_entry, 2),
+                        "short_entry": round(short_entry, 2),
+                        "min_conf_gap": round(min_conf_gap, 2),
+                    }
+                    best_metrics = {
+                        "sharpe_ratio": sharpe,
+                        "total_return": total_return,
+                        "total_trades": total_trades,
+                        "wins": metrics.get("Wins", 0),
+                        "losses": metrics.get("Losses", 0),
+                        "win_rate": metrics.get("Wins", 0) / total_trades if total_trades > 0 else 0,
+                    }
+
+    if best_config is None:
+        print(f"  No valid configuration found (requires return > 0 and >= {MIN_SIGNALS_PER_TICKER} trades)")
+        return None
+
+    print(f"  Best config: long={best_config['long_entry']}, min_gap={best_config['min_conf_gap']}")
+    print(f"  Sharpe: {best_metrics['sharpe_ratio']:.2f}, Return: {best_metrics['total_return']:.2%}, Trades: {best_metrics['total_trades']}")
+    
+    return {**best_config, **best_metrics}
+
+
+def save_tuned_thresholds(ticker, thresholds):
+    """Save tuned thresholds to JSON file"""
+    model_dir = config.get_model_dir(ticker)
+    filepath = os.path.join(model_dir, "tuned_thresholds.json")
+    
+    data = {
+        "ticker": ticker,
+        "long_entry": thresholds["long_entry"],
+        "short_entry": thresholds["short_entry"],
+        "min_conf_gap": thresholds["min_conf_gap"],
+        "sharpe_ratio": thresholds.get("sharpe_ratio", 0),
+        "total_return": thresholds.get("total_return", 0),
+        "total_trades": thresholds.get("total_trades", 0),
+        "win_rate": thresholds.get("win_rate", 0),
+        "tuned_date": datetime.now().strftime("%Y-%m-%d"),
+    }
+    
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2)
+    print(f"  Saved tuned thresholds to {filepath}")
+
+
+def load_tuned_thresholds(ticker):
+    """Load tuned thresholds from JSON file"""
+    filepath = os.path.join(config.get_model_dir(ticker), "tuned_thresholds.json")
+    if os.path.exists(filepath):
+        with open(filepath) as f:
+            data = json.load(f)
+        print(f"Loaded tuned thresholds: long={data['long_entry']}, min_gap={data['min_conf_gap']}")
+        return data
+    return None
+
+
 def align_prediction_frame(test_df, probabilities):
     df = add_technical_indicators(test_df.copy())
-    aligned = df.iloc[LOOK_BACK:-1].copy().reset_index(drop=True)
-    aligned["next_close"] = df["Close"].iloc[LOOK_BACK + 1 :].reset_index(drop=True)
+    aligned = df.iloc[LOOK_BACK:].copy().reset_index(drop=True)
+    signal_reference = df.iloc[LOOK_BACK - 1 : -1].copy().reset_index(drop=True)
+    aligned["reference_close"] = signal_reference["Close"]
+    aligned["decision_open"] = aligned["Open"]
     aligned["prob_up"] = probabilities
     aligned["prob_down"] = 1 - probabilities
     aligned["confidence_gap"] = np.abs(aligned["prob_up"] - 0.5)
-    aligned["next_return"] = (
-        aligned["next_close"] - aligned["Close"]
-    ) / aligned["Close"]
+    aligned["session_return"] = (
+        aligned["Close"] - aligned["reference_close"]
+    ) / aligned["reference_close"]
+    for column in [
+        "RSI",
+        "MACD",
+        "MACD_Signal",
+        "MACD_Hist",
+        "SMA_20",
+        "SMA_50",
+        "SMA_200",
+        "Price_SMA20_Ratio",
+        "Price_SMA50_Ratio",
+        "BB_Upper",
+        "BB_Lower",
+        "BB_Width",
+        "ATR",
+        "Momentum_5",
+        "Momentum_10",
+        "Momentum_20",
+        "Volume_Ratio",
+        "Daily_Return",
+        "Volatility_10",
+        "Volatility_20",
+    ]:
+        aligned[column] = signal_reference[column]
     return aligned
 
 
 def simulate_option_return(row):
     direction = 1 if row["prob_up"] >= 0.5 else -1
-    directional_move = direction * row["next_return"]
-    atr_pct = max(float(row["ATR"] / row["Close"]) if row["Close"] > 0 else 0, 0)
+    directional_move = direction * row["session_return"]
+    atr_pct = max(
+        float(row["ATR"] / row["reference_close"]) if row["reference_close"] > 0 else 0,
+        0,
+    )
     vol_component = max(float(row.get("Volatility_10", 0) or 0), 0)
 
     # Synthetic one-step option premium and payoff proxy built from realized move.
@@ -352,8 +627,8 @@ def build_mode_selector_dataset(test_df, probabilities, threshold):
 
     selector_df["equity_return"] = np.where(
         selector_df["prob_up"] >= selector_df["prob_down"],
-        selector_df["next_return"],
-        -selector_df["next_return"],
+        selector_df["session_return"],
+        -selector_df["session_return"],
     )
     selector_df["option_return"] = selector_df.apply(simulate_option_return, axis=1)
     selector_df["best_mode"] = np.where(
@@ -362,8 +637,8 @@ def build_mode_selector_dataset(test_df, probabilities, threshold):
     selector_df["best_mode_label"] = np.where(
         selector_df["best_mode"] == "option", 1, 0
     )
-    selector_df["current_price"] = selector_df["Close"]
-    selector_df["atr_pct"] = selector_df["ATR"] / selector_df["Close"]
+    selector_df["current_price"] = selector_df["decision_open"]
+    selector_df["atr_pct"] = selector_df["ATR"] / selector_df["reference_close"]
     selector_df["volatility_10"] = selector_df["Volatility_10"]
     selector_df["volatility_20"] = selector_df["Volatility_20"]
     selector_df["rsi"] = selector_df["RSI"]
@@ -449,8 +724,10 @@ def backtest_single_ticker(ticker):
     test_df = raw_df.iloc[test_start_idx:].reset_index(drop=True)
 
     probabilities, actuals = predict_directions(model, scaler, test_df)
-    prices = test_df["Close"].iloc[config.LOOK_BACK : -1].values
-    features_df = add_technical_indicators(test_df.copy()).iloc[config.LOOK_BACK : -1]
+    prices = test_df["Open"].iloc[config.LOOK_BACK :].values
+    features_df = add_technical_indicators(test_df.copy()).iloc[
+        config.LOOK_BACK - 1 : -1
+    ]
     features_df = features_df.reset_index(drop=True)
 
     preds = (probabilities > 0.5).astype(int)
@@ -458,6 +735,25 @@ def backtest_single_ticker(ticker):
     accuracy = (preds == actuals_arr).mean()
     print(f"Predictions: {len(probabilities)}")
     print(f"Prediction accuracy: {accuracy:.2%}")
+
+    # Auto-tune thresholds
+    tuned = load_tuned_thresholds(ticker)
+    if tuned is None and AUTO_TUNE_ENABLED:
+        tuned = auto_tune_thresholds(ticker, probabilities, actuals, prices, features_df)
+        if tuned:
+            save_tuned_thresholds(ticker, tuned)
+    
+    if tuned:
+        global LONG_ENTRY_THRESHOLD, SHORT_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
+        LONG_ENTRY_THRESHOLD = tuned["long_entry"]
+        SHORT_ENTRY_THRESHOLD = tuned["short_entry"]
+        MIN_CONFIDENCE_GAP = tuned["min_conf_gap"]
+        print(f"\nUsing tuned thresholds: long={LONG_ENTRY_THRESHOLD}, min_gap={MIN_CONFIDENCE_GAP}")
+    else:
+        if AUTO_TUNE_ENABLED:
+            print(f"\nSkipping {ticker}: no valid threshold configuration found")
+            return
+        print(f"\nUsing default thresholds: long={LONG_ENTRY_THRESHOLD}, min_gap={MIN_CONFIDENCE_GAP}")
 
     print("\n--- Backtesting (Classifier) ---")
     capital, trades, portfolio_value = backtest_classifier(
@@ -472,13 +768,11 @@ def backtest_single_ticker(ticker):
     # Save results
     ticker_results_dir = os.path.join(RESULTS_DIR, ticker)
     os.makedirs(ticker_results_dir, exist_ok=True)
-    portfolio_dates = (
-        test_df["Date"].iloc[config.LOOK_BACK - 1 : -1].reset_index(drop=True)
-    )
+    portfolio_dates = test_df["Date"].iloc[config.LOOK_BACK :].reset_index(drop=True)
     df_results = pd.DataFrame(
         {
             "Date": portfolio_dates.iloc[: len(portfolio_value)],
-            "Portfolio_Value": portfolio_value,
+            "Portfolio_Value": portfolio_value[1:],
         }
     )
     df_results.to_csv(f"{ticker_results_dir}/backtest_results.csv", index=False)
@@ -558,9 +852,7 @@ def calculate_metrics(portfolio_value, trades, initial_capital=10000):
 
             if entry_price is not None:
                 is_win = (
-                    price > entry_price
-                    if action == "SELL"
-                    else price < entry_price
+                    price > entry_price if action == "SELL" else price < entry_price
                 )
                 if is_win:
                     wins += 1
