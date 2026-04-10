@@ -1175,12 +1175,27 @@ def execute_trades(trades, trade_mode=None):
             print(f"[{ticker}] HOLD - Already traded today")
             continue
         
+        # Re-fetch features for this ticker
+        try:
+            long_entry, min_gap = get_ticker_thresholds(ticker)
+            global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
+            LONG_ENTRY_THRESHOLD = long_entry
+            MIN_CONFIDENCE_GAP = min_gap
+            
+            classifier, scaler = load_models(ticker)
+            raw_data = get_yfinance_data(ticker)
+            signal_data, current_price, _ = prepare_live_market_context(raw_data)
+            features = prepare_features(signal_data)
+        except Exception as e:
+            print(f"[{ticker}] ERROR fetching data: {e}")
+            continue
+        
         print(f"\n[{ticker}] Executing {trade['action']} at ${current_price:.2f}")
         
         if trade["action"] == "BUY":
-            trade_equity(ticker, account, current_price, prob_up, None)
+            trade_equity(ticker, account, current_price, prob_up, features)
         elif trade["action"] == "SHORT":
-            trade_equity(ticker, account, current_price, prob_up, None)
+            trade_equity(ticker, account, current_price, prob_up, features)
 
 
 if __name__ == "__main__":
