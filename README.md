@@ -11,8 +11,9 @@ LSTM-based multi-ticker stock trading bot that predicts price movements for mult
 - **Learned Auto Mode**: Per-ticker mode selector (equity vs option) trained on historical signals
 - **Short Selling**: Equity shorts only when Alpaca marks the asset shortable and easy-to-borrow
 - **Options Mode**: Optional single-leg call/put trading using Alpaca option contracts
-- **One Trade Per Day**: Places at most one order per ticker per day; manages risk exits (stop-loss, take-profit, max hold) intraday
-- **GitHub Actions Scheduling**: Runs once daily ~10:00 AM ET on weekdays via `.github/workflows/trade.yml`
+- **One Execution Per Day**: Uses Supabase to ensure trades only execute once per day; resilient to GitHub delays
+- **All Tickers Meeting Threshold**: Executes ALL tickers that meet the confidence threshold
+- **GitHub Actions + Supabase**: Two workflows (schedule creator + executor) with database coordination for reliability
 
 ## Project Structure
 
@@ -23,9 +24,10 @@ MrKrabs/
 ├── backtest.py         # Backtest & validate trading strategy
 ├── trading_bot.py      # Trading signals bot (paper trading analysis)
 ├── alpaca_trader.py    # Alpaca paper trading execution
-├── run_bot.sh          # Scheduler script (multithreaded)
+├── execute_trades.py   # Supabase-backed trade executor (never miss a trade)
 ├── run_all.py          # Full pipeline orchestrator
 ├── config.py           # Centralized configuration
+├── .env                # API keys (Alpaca, Supabase)
 ├── data/               # Training data (ticker-specific subdirectories)
 ├── models/             # Trained models (ticker-specific subdirectories)
 ├── logs/               # Trading logs
@@ -218,35 +220,62 @@ python alpaca_trader.py --ticker SPY --mode auto
 
 ## Scheduling
 
-### GitHub Actions (Recommended)
+### GitHub Actions + Supabase (Recommended - Never Miss a Trade)
 
-The repo includes a workflow at `.github/workflows/trade.yml` that runs once daily on weekdays:
+The system uses **two workflows** with Supabase coordination to ensure trades execute even with GitHub delays:
 
-```yaml
-schedule:
-  - cron: "00 14 * * 1-5"  # 10:00 AM ET (14:00 UTC during EDT)
-```
+| Workflow | Cron Schedule | Purpose |
+|----------|---------------|---------|
+| `create_schedule.yml` | 12:00 UTC (Mon-Fri) | Creates daily trade schedule in Supabase |
+| `execute_trades.yml` | Every 5 mins from 14:00 UTC | Executes trades, handles delays |
 
-This executes `python alpaca_trader.py --all --mode auto` on an Ubuntu runner with your Alpaca secrets stored as GitHub repository secrets.
+**How it works:**
 
-**Required secrets:**
+1. At **12:00 UTC**, `create_schedule.yml` creates a schedule record in Supabase (status: "pending")
+2. At **14:00+ UTC**, `execute_trades.yml` runs every 5 minutes
+3. First run after 14:00:
+   - Finds ALL tickers meeting threshold
+   - Executes trades (multiple tickers possible)
+   - Updates schedule status to "executed"
+4. Subsequent runs skip (already executed today)
+
+**Benefits:**
+- Resilient to GitHub delays (20-30 mins)
+- Only executes once per day
+- All tickers meeting threshold trade
+- Tracks execution state in Supabase
+
+**Required GitHub secrets:**
 - `ALPACA_URL` — e.g. `https://paper-api.alpaca.markets`
 - `ALPACA_KEY` — your API key
 - `ALPACA_SECRET` — your API secret
+- `SUPABASE_URL` — from your Supabase project
+- `SUPABASE_ANON_KEY` — from your Supabase project
 
-### Local Cron (Alternative)
+**Supabase table setup:**
 
-If you prefer running locally, add to crontab:
+Run this in your Supabase SQL Editor:
 
-```bash
-crontab -e
-00 14 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+```sql
+CREATE TABLE IF NOT EXISTS trade_schedule (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  scheduled_date DATE NOT NULL,
+  scheduled_hour_utc INT DEFAULT 14,
+  status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  executed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_schedule_pending ON trade_schedule(status, scheduled_date, scheduled_hour_utc) 
+WHERE status = 'pending';
 ```
 
-Or run manually:
+### Manual Execution
 
 ```bash
-./run_bot.sh
+# Run trade executor locally
+python execute_trades.py
 ```
 
 **Note**: The bot places at most one order per ticker per day. Subsequent runs on the same day will skip with "Already placed a non-canceled order for this ticker today." Risk exits (stop-loss, take-profit, max hold) are still checked on every run.
@@ -288,6 +317,19 @@ The selector is trained from historical test-window signals using realized equit
 - xgboost
 
 Install: `pip install -r requirements.txt`
+
+## Supabase Setup
+
+1. Create a free project at [supabase.com](https://supabase.com)
+2. Get your credentials:
+   - **SUPABASE_URL**: Project URL (e.g., `https://xxxxx.supabase.co`)
+   - **SUPABASE_ANON_KEY**: Found in Project Settings → API
+3. Add to your `.env` file:
+   ```
+   SUPABASE_URL=https://xxxxx.supabase.co
+   SUPABASE_ANON_KEY=your_anon_key
+   ```
+4. Create the `trade_schedule` table (see Scheduling section above)
 
 ## Alpaca Paper Trading
 
