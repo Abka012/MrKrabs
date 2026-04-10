@@ -1007,6 +1007,11 @@ def main(ticker):
     ticker_print(ticker, f"Enhanced Alpaca Paper Trading Bot - {ticker}")
     ticker_print(ticker, "=" * 50)
 
+    now = datetime.utcnow()
+    if not (now.hour == 14 and now.minute < 5):
+        ticker_print(ticker, f">>> SKIP - Not at scheduled time (UTC: {now.hour}:{now.minute:02d})")
+        return
+
     # Load tuned thresholds for this ticker
     long_entry, min_gap = get_ticker_thresholds(ticker)
     global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
