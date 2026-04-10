@@ -1,0 +1,80 @@
+name: Alpaca Trade Bot - Executor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 14 * * 1-5"
+
+concurrency:
+  group: alpaca-executor
+  cancel-in-progress: false
+
+jobs:
+  execute-trades:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      ALPACA_URL: ${{ secrets.ALPACA_URL }}
+      ALPACA_KEY: ${{ secrets.ALPACA_KEY }}
+      ALPACA_SECRET: ${{ secrets.ALPACA_SECRET }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check schedule and execute trades
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "Checking for pending schedule on $TODAY"
+          
+          # Check if there's a pending schedule for today
+          SCHEDULE=$(curl -s -X GET "${SUPABASE_URL}/rest/v1/trade_schedule?scheduled_date=eq.${TODAY}&scheduled_hour_utc=eq.14&status=eq.pending" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Prefer: return=representation")
+          
+          echo "Schedule query result: $SCHEDULE"
+          
+          # Check if schedule exists
+          if echo "$SCHEDULE" | grep -q "id"; then
+            echo "Found pending schedule, executing trades..."
+            
+            # Run the trading bot to find and execute trades
+            python -c "
+              import sys
+              sys.path.insert(0, '.')
+              from alpaca_trader import find_trades, execute_trades
+              
+              trades = find_trades()
+              if trades:
+                  execute_trades(trades)
+              else:
+                  print('No trades to execute')
+            "
+            
+            # Update schedule status to executed
+            SCHEDULE_ID=$(echo "$SCHEDULE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data[0]['id'] if data else '')" 2>/dev/null || echo "")
+            
+            if [ -n "$SCHEDULE_ID" ]; then
+              curl -s -X PATCH "${SUPABASE_URL}/rest/v1/trade_schedule?id=eq.${SCHEDULE_ID}" \
+                -H "apikey: ${SUPABASE_ANON_KEY}" \
+                -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+                -H "Content-Type: application/json" \
+                -d '{"status": "executed", "executed_at": "'$(date -u -Iseconds)'"}'
+              echo "Updated schedule to executed"
+            fi
+          else
+            echo "No pending schedule found for today"
+          fi

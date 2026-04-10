@@ -1007,17 +1007,6 @@ def main(ticker):
     ticker_print(ticker, f"Enhanced Alpaca Paper Trading Bot - {ticker}")
     ticker_print(ticker, "=" * 50)
 
-    now = datetime.utcnow()
-    if not (now.hour == 14 and now.minute < 5):
-        ticker_print(ticker, f">>> SKIP - Not at scheduled time (UTC: {now.hour}:{now.minute:02d})")
-        return
-
-    # Load tuned thresholds for this ticker
-    long_entry, min_gap = get_ticker_thresholds(ticker)
-    global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
-    LONG_ENTRY_THRESHOLD = long_entry
-    MIN_CONFIDENCE_GAP = min_gap
-
     if not check_alpaca_keys():
         return
 
@@ -1085,6 +1074,113 @@ def main(ticker):
         trade_option(ticker, account, current_price, prob_up, features)
     else:
         trade_equity(ticker, account, current_price, prob_up, features)
+
+
+def find_trades():
+    """
+    Evaluate all tickers and return list of trades that meet threshold.
+    Returns list of dicts with ticker, prob_up, confidence_gap, action, current_price.
+    """
+    import concurrent.futures
+    
+    global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
+    
+    tickers = config.TICKERS
+    results = []
+    
+    def evaluate_ticker(ticker):
+        try:
+            long_entry, min_gap = get_ticker_thresholds(ticker)
+            
+            global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
+            LONG_ENTRY_THRESHOLD = long_entry
+            MIN_CONFIDENCE_GAP = min_gap
+            
+            classifier, scaler = load_models(ticker)
+            raw_data = get_yfinance_data(ticker)
+            signal_data, current_price, _ = prepare_live_market_context(raw_data)
+            features = prepare_features(signal_data)
+            prob_up = predict_direction(classifier, scaler, features)
+            confidence_gap = abs(prob_up - 0.5)
+            
+            signal = evaluate_signal(features, current_price, prob_up)
+            
+            action = None
+            if signal["bullish_signal"]:
+                action = "BUY"
+            elif signal["bearish_signal"]:
+                action = "SHORT"
+            
+            return {
+                "ticker": ticker,
+                "prob_up": prob_up,
+                "confidence_gap": confidence_gap,
+                "action": action,
+                "current_price": current_price,
+                "long_entry": long_entry,
+                "min_gap": min_gap,
+            }
+        except Exception as e:
+            print(f"ERROR evaluating {ticker}: {e}")
+            return None
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(tickers)) as executor:
+        futures = {executor.submit(evaluate_ticker, t): t for t in tickers}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+    
+    trades_to_execute = [r for r in results if r["action"] is not None]
+    
+    print(f"\n{'#' * 60}")
+    print(f"# Trade Evaluation Results")
+    print(f"{'#' * 60}")
+    for r in sorted(results, key=lambda x: x["confidence_gap"], reverse=True):
+        action_str = r["action"] if r["action"] else "HOLD"
+        print(f"{r['ticker']}: {action_str} | prob_up={r['prob_up']:.2%} | gap={r['confidence_gap']:.2%}")
+    print(f"\nTrades to execute: {len(trades_to_execute)}")
+    
+    return trades_to_execute
+
+
+def execute_trades(trades, trade_mode=None):
+    """
+    Execute a list of trades.
+    trades: list of dicts from find_trades()
+    trade_mode: "equity", "option", or "auto" (default from config)
+    """
+    if not check_alpaca_keys():
+        print("ERROR: Alpaca keys not configured")
+        return
+    
+    account = get_account()
+    if not account:
+        print("ERROR: Could not connect to Alpaca")
+        return
+    
+    if trade_mode is None:
+        trade_mode = TRADE_MODE
+    
+    cash = float(account.get("cash", 0))
+    equity = float(account.get("portfolio_value", cash))
+    print(f"Connected - Cash: ${cash:.2f} | Equity: ${equity:.2f}")
+    
+    for trade in trades:
+        ticker = trade["ticker"]
+        prob_up = trade["prob_up"]
+        current_price = trade["current_price"]
+        
+        if has_traded_today(ticker):
+            print(f"[{ticker}] HOLD - Already traded today")
+            continue
+        
+        print(f"\n[{ticker}] Executing {trade['action']} at ${current_price:.2f}")
+        
+        if trade["action"] == "BUY":
+            trade_equity(ticker, account, current_price, prob_up, None)
+        elif trade["action"] == "SHORT":
+            trade_equity(ticker, account, current_price, prob_up, None)
 
 
 if __name__ == "__main__":

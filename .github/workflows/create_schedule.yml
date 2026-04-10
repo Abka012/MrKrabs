@@ -1,0 +1,40 @@
+name: Alpaca Trade Bot - Schedule Creator
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 13 * * 1-5"
+
+concurrency:
+  group: alpaca-schedule
+  cancel-in-progress: false
+
+jobs:
+  create-schedule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Create trade schedule in Supabase
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          echo "Creating schedule for $TODAY"
+          
+          RESPONSE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/trade_schedule" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=representation" \
+            -d "{
+              \"ticker\": \"ALL\",
+              \"scheduled_date\": \"${TODAY}\",
+              \"scheduled_hour_utc\": 14,
+              \"status\": \"pending\"
+            }")
+          
+          echo "Response: $RESPONSE"
+          echo "Schedule created successfully"
