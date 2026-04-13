@@ -33,6 +33,23 @@ def get_today_schedule():
     return None
 
 
+def create_schedule():
+    """Create a schedule if none exists (backup for create_schedule.yml delays)"""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    url = f"{SUPABASE_URL}/rest/v1/trade_schedule"
+    data = {
+        "ticker": "ALL",
+        "scheduled_date": today,
+        "scheduled_hour_utc": 14,
+        "status": "pending"
+    }
+    resp = requests.post(url, headers=HEADERS, json=data)
+    if resp.status_code in [200, 201]:
+        print("Created schedule (backup for delayed create_schedule.yml)")
+        return get_today_schedule()
+    return None
+
+
 def update_schedule_status(schedule_id, status):
     url = f"{SUPABASE_URL}/rest/v1/trade_schedule"
     params = {"id": f"eq.{schedule_id}"}
@@ -64,9 +81,13 @@ def main():
 
     schedule = get_today_schedule()
 
+    # If no schedule exists, create one on-the-fly (backup for delayed create_schedule.yml)
     if not schedule:
-        print("No schedule found for today")
-        return
+        print("No schedule found for today, creating one...")
+        schedule = create_schedule()
+        if not schedule:
+            print("Failed to create schedule")
+            return
 
     print(f"Found schedule: {schedule['id']}")
     print(f"Status: {schedule['status']}")
