@@ -140,8 +140,12 @@ models/
 results/
 logs/
 *.keras
-*.pkl
 *.npy
+
+# Allow scaler.pkl in data directory
+!data/
+data/*/
+!data/*/scaler.pkl
 
 # Environments
 .env
