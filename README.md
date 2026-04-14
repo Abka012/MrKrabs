@@ -1,6 +1,6 @@
 # MrKrabs
 
-LSTM-based multi-ticker stock trading bot that predicts price movements for multiple stocks (SPY, QQQ, AAPL, MSFT, TSLA, NVDA) and executes trades via Alpaca paper trading API.
+LSTM-based multi-ticker stock trading bot that predicts price movements for 20 stocks and executes trades via Alpaca paper trading API.
 
 ## Features
 
@@ -61,19 +61,19 @@ python alpaca_trader.py --ticker SPY --mode option
 Edit [config.py](config.py) for centralized settings:
 
 ```python
-TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "NVDA"]
+TICKERS = ["SPY", "QQQ", "AAPL", "MSFT", "TSLA", "NVDA", "DIA", "IWM", "XLK", "XLF", "XLE", "AMZN", "GOOGL", "META", "NFLX", "AMD", "INTC", "TLT", "GLD", "SLV", "USO"]
 DEFAULT_TICKER = "SPY"
 
-# Entry thresholds
-LONG_ENTRY_THRESHOLD = 0.52    # Prob(UP) threshold for long entries
-SHORT_ENTRY_THRESHOLD = 0.48   # Prob(UP) threshold for short entries
-MIN_CONFIDENCE_GAP = 0.02      # Minimum confidence gap required
+# Entry thresholds (profit-optimized)
+LONG_ENTRY_THRESHOLD = 0.55    # Higher threshold for more selective trades
+MIN_CONFIDENCE_GAP = 0.05       # Higher confidence gap for stronger signals
+SHORT_ENTRY_THRESHOLD = 0.45  # Prob(UP) threshold for short entries
 
 # Risk management
-POSITION_SIZE = 0.05           # 5% of cash per trade
-STOP_LOSS_PCT = 0.03           # 3% stop-loss
-TAKE_PROFIT_PCT = 0.06         # 6% take-profit
-MAX_HOLD_DAYS = 20             # Max days to hold a position
+POSITION_SIZE = 0.01          # 1% of cash per trade (20 tickers × 1% = 20% max daily exposure)
+STOP_LOSS_PCT = 0.05            # 5% stop-loss (wider to reduce whipsaw)
+TAKE_PROFIT_PCT = 0.08          # 8% take-profit (wider to capture more upside)
+MAX_HOLD_DAYS = 20              # Max days to hold a position
 
 # Trade mode
 TRADE_MODE = "equity"          # "equity", "option", or "auto"
@@ -81,7 +81,7 @@ ALLOW_SHORTS = True
 USE_TREND_FILTER = False
 
 # Options
-OPTIONS_POSITION_SIZE = 0.05   # 5% of options buying power per trade
+OPTIONS_POSITION_SIZE = 0.01   # 1% of options buying power per trade
 OPTIONS_MIN_DTE = 7
 OPTIONS_MAX_DTE = 45
 OPTIONS_STRIKE_WINDOW = 0.08   # +/- 8% around spot
@@ -177,10 +177,10 @@ python alpaca_trader.py --ticker SPY --mode auto
 2024-01-15 10:30:00 - INFO - Current price: $512.34
 2024-01-15 10:30:00 - INFO - Probability UP: 62.45%
 2024-01-15 10:30:00 - INFO - Probability DOWN: 37.55%
-2024-01-15 10:30:00 - INFO - BUY (LONG) 10 shares of SPY at $512.34
+2024-01-15 10:30:00 - INFO - BUY (LONG) 2 shares of SPY at $512.34
 2024-01-15 10:30:00 - INFO - Portfolio Value: $9847.66
 2024-01-15 10:30:00 - INFO -   Cash: $4847.66
-2024-01-15 10:30:00 - INFO -   Position: 10.00 shares
+2024-01-15 10:30:00 - INFO -   Position: 2.00 shares
 ```
 
 ## Scheduling
@@ -266,8 +266,8 @@ For automatic trade execution:
 ### Risk Management
 
 The bot manages risk through:
-- **Stop-Loss**: 3% adverse move closes the position
-- **Take-Profit**: 6% favorable move locks in gains
+- **Stop-Loss**: 5% adverse move closes the position
+- **Take-Profit**: 8% favorable move locks in gains
 - **Max Hold Days**: Positions auto-close after 20 trading days
 - **One Order Per Day**: Prevents overtrading; signal resets daily
 - **Trend Filter** (optional): Requires SMA alignment when `USE_TREND_FILTER = True`
