@@ -196,7 +196,7 @@ The bot runs locally using crontab at **14:00 UTC (10:00 AM ET)** — 30 minutes
 crontab -e
 
 # Add this line:
-0 14 * * 1-5 /home/abka/Documents/MrKrabs/run_bot.sh
+0 14 * * 1-5 $PROJECT_DIR/MrKrabs/run_bot.sh
 ```
 
 This runs the bot once daily at 14:00 UTC. The bot places at most one order per ticker per day.
