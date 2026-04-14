@@ -21,7 +21,7 @@ MrKrabs/
 ├── prepare_data.py     # Download data, add technical indicators, create sequences
 ├── train_model.py      # Train LSTM models (regression, classifier, XGBoost)
 ├── backtest.py         # Backtest & validate trading strategy
-├── trading_bot.py      # Trading signals bot (paper trading analysis)
+
 ├── alpaca_trader.py    # Alpaca paper trading execution
 ├── run_all.py          # Full pipeline orchestrator
 ├── config.py           # Centralized configuration
@@ -55,39 +55,6 @@ python alpaca_trader.py --all --mode option  # Trade all tickers with options
 python alpaca_trader.py --ticker SPY  # Trade specific ticker
 python alpaca_trader.py --ticker SPY --mode option
 ```
-
-## Trading Bot (trading_bot.py)
-
-The `trading_bot.py` script analyzes market data and generates trading signals without executing live trades. It's useful for testing and analyzing strategy performance.
-
-### Usage
-
-```bash
-# Run for all tickers from config
-python trading_bot.py --all
-
-# Run for specific ticker
-python trading_bot.py --ticker SPY
-
-# Default (no args) runs all tickers
-python trading_bot.py
-```
-
-### Features
-
-- Fetches recent market data for each ticker
-- Applies 25 technical indicators
-- Generates BUY/SELL/HOLD signals based on classifier probability
-- Tracks portfolio value and position
-- Logs all activity to `logs/trading_bot.log`
-
-### Output
-
-The bot provides:
-- Current price for each ticker
-- Probability of UP/DOWN movement
-- Trading actions taken (BUY, SELL, SHORT, COVER, or HOLD)
-- Portfolio summary with cash, positions, and total return
 
 ## Configuration
 
