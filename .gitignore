@@ -143,19 +143,6 @@ logs/
 *.pkl
 *.npy
 
-# Keep training outputs ignored by default, but allow the minimum
-# inference artifacts required for GitHub Actions trading runs.
-!data/
-!data/*/
-data/*/*
-!data/*/scaler.pkl
-
-!models/
-!models/*/
-models/*/*
-!models/*/classifier_model.keras
-!models/*/mode_selector.pkl
-
 # Environments
 .env
 .envrc
