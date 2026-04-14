@@ -1,6 +1,6 @@
 # MrKrabs
 
-XGBoost-based multi-ticker stock trading bot that predicts price movements for 20 stocks and executes trades via Alpaca paper trading API.
+XGBoost-based multi-ticker stock trading bot that predicts price movements for 21 stocks and executes trades via Alpaca paper trading API.
 
 ## Features
 
