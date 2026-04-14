@@ -1,13 +1,13 @@
 # MrKrabs
 
-LSTM-based multi-ticker stock trading bot that predicts price movements for 20 stocks and executes trades via Alpaca paper trading API.
+XGBoost-based multi-ticker stock trading bot that predicts price movements for 20 stocks and executes trades via Alpaca paper trading API.
 
 ## Features
 
 - **Multi-Ticker Support**: Trade multiple stocks simultaneously with ticker-specific data and models
 - **Multithreaded Execution**: Run all tickers in parallel for faster execution
 - **25 Technical Indicators**: RSI, MACD, Bollinger Bands, SMAs, ATR, Momentum, Volume ratios
-- **BiLSTM Classifier**: Directional model predicting UP/DOWN (~55-58% accuracy)
+- **XGBoost Classifier**: Directional model predicting UP/DOWN (~55-58% accuracy)
 - **Learned Auto Mode**: Per-ticker mode selector (equity vs option) trained on historical signals
 - **Short Selling**: Equity shorts only when Alpaca marks the asset shortable and easy-to-borrow
 - **Options Mode**: Optional single-leg call/put trading using Alpaca option contracts
@@ -19,7 +19,7 @@ LSTM-based multi-ticker stock trading bot that predicts price movements for 20 s
 ```
 MrKrabs/
 ├── prepare_data.py     # Download data, add technical indicators, create sequences
-├── train_model.py      # Train LSTM models (regression, classifier, XGBoost)
+├── train_model.py      # Train XGBoost models
 ├── backtest.py         # Backtest & validate trading strategy
 
 ├── alpaca_trader.py    # Alpaca paper trading execution
