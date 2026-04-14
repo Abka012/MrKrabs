@@ -9,13 +9,28 @@ TICKERS = [
     "MSFT",
     "TSLA",
     "NVDA",
+    "DIA",
+    "IWM",
+    "XLK",
+    "XLF",
+    "XLE",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "NFLX",
+    "AMD",
+    "INTC",
+    "TLT",
+    "GLD",
+    "SLV",
+    "USO",
 ]
 
 # Default ticker to use when no specific ticker is provided
 DEFAULT_TICKER = "SPY"
 
 # Trading settings
-POSITION_SIZE = 0.05  # 5% of cash per trade
+POSITION_SIZE = 0.01  # 1% of cash per trade (20 tickers × 1% = 20% max daily exposure)
 THRESHOLD = 0.45  # Legacy threshold retained for compatibility
 LONG_ENTRY_THRESHOLD = 0.52
 SHORT_ENTRY_THRESHOLD = 0.48
@@ -35,7 +50,7 @@ ALLOW_SHORTS = True
 USE_TREND_FILTER = False
 
 # Options settings
-OPTIONS_POSITION_SIZE = 0.05  # 5% of options buying power per trade
+OPTIONS_POSITION_SIZE = 0.01  # 1% of options buying power per trade
 OPTIONS_ENABLED_UNDERLYINGS = TICKERS
 OPTIONS_MIN_DTE = 7
 OPTIONS_MAX_DTE = 45
