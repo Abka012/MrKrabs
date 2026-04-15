@@ -78,16 +78,16 @@ LOG_DIR = os.path.join(PROJECT_DIR, "logs")
 
 
 def get_data_dir(ticker):
-    """Get data directory for a specific ticker"""
+    """Return the absolute data directory path for a ticker."""
     return os.path.join(DATA_DIR, ticker)
 
 
 def get_model_dir(ticker):
-    """Get model directory for a specific ticker"""
+    """Return the absolute model directory path for a ticker."""
     return os.path.join(MODEL_DIR, ticker)
 
 
 def ensure_dirs(ticker):
-    """Ensure data and model directories exist for a ticker"""
+    """Create the ticker-specific data and model directories if needed."""
     os.makedirs(get_data_dir(ticker), exist_ok=True)
     os.makedirs(get_model_dir(ticker), exist_ok=True)

@@ -71,7 +71,7 @@ MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def get_ticker_thresholds(ticker):
-    """Load tuned thresholds from JSON, fallback to config defaults"""
+    """Load per-ticker thresholds from tuning output or fall back to config values."""
     tuned_file = os.path.join(config.get_model_dir(ticker), "tuned_thresholds.json")
     if os.path.exists(tuned_file):
         with open(tuned_file) as f:
@@ -81,6 +81,7 @@ def get_ticker_thresholds(ticker):
 
 
 def compute_rsi(prices, period=14):
+    """Compute the relative strength index for a price series."""
     delta = prices.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -90,6 +91,7 @@ def compute_rsi(prices, period=14):
 
 
 def compute_macd(prices, fast=12, slow=26, signal=9):
+    """Compute MACD, signal, and histogram series from close prices."""
     ema_fast = prices.ewm(span=fast, adjust=False).mean()
     ema_slow = prices.ewm(span=slow, adjust=False).mean()
     macd = ema_fast - ema_slow
@@ -99,6 +101,7 @@ def compute_macd(prices, fast=12, slow=26, signal=9):
 
 
 def compute_bollinger_bands(prices, period=20):
+    """Compute Bollinger band center, upper band, and lower band."""
     sma = prices.rolling(window=period).mean()
     std = prices.rolling(window=period).std()
     upper = sma + (std * 2)
@@ -107,6 +110,7 @@ def compute_bollinger_bands(prices, period=20):
 
 
 def compute_atr(high, low, close, period=14):
+    """Compute average true range over the requested rolling period."""
     tr = np.maximum(
         high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1)))
     )
@@ -115,6 +119,7 @@ def compute_atr(high, low, close, period=14):
 
 
 def add_technical_indicators(df):
+    """Append the live-trading technical indicator feature set to market data."""
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
@@ -157,12 +162,14 @@ def add_technical_indicators(df):
 
 
 def load_models(ticker):
+    """Load the saved classifier and scaler required for live inference."""
     scaler = pickle.load(open(f"{config.get_data_dir(ticker)}/scaler.pkl", "rb"))
     classifier = load_model(f"{config.get_model_dir(ticker)}/classifier_model.keras")
     return classifier, scaler
 
 
 def get_yfinance_data(ticker, days=120):
+    """Fetch recent historical bars from Yahoo Finance for live signal generation."""
     stock = yf.Ticker(ticker)
     end = datetime.now()
     start = end - timedelta(days=days)
@@ -173,6 +180,7 @@ def get_yfinance_data(ticker, days=120):
 
 
 def get_market_day(ts):
+    """Convert a timestamp into its U.S. market calendar day."""
     ts = pd.Timestamp(ts)
     if ts.tzinfo is None:
         ts = ts.tz_localize(MARKET_TIMEZONE)
@@ -182,6 +190,7 @@ def get_market_day(ts):
 
 
 def prepare_live_market_context(raw_data):
+    """Split live data into signal inputs and the current tradable reference price."""
     if len(raw_data) < LOOK_BACK:
         raise ValueError(
             f"Need at least {LOOK_BACK} daily rows, but only found {len(raw_data)}"
@@ -203,6 +212,7 @@ def prepare_live_market_context(raw_data):
 
 
 def prepare_features(df):
+    """Generate the ordered feature matrix expected by the classifier."""
     df = add_technical_indicators(df)
 
     feature_cols = [
@@ -238,6 +248,7 @@ def prepare_features(df):
 
 
 def predict_direction(classifier, scaler, data):
+    """Return the latest classifier probability that the next session is bullish."""
     scaled = scaler.transform(data.values)
     seq = scaled[-LOOK_BACK:].reshape(1, LOOK_BACK, 25)
     prob = classifier.predict(seq, verbose=0)[0, 0]
@@ -245,6 +256,7 @@ def predict_direction(classifier, scaler, data):
 
 
 def check_alpaca_keys():
+    """Validate that Alpaca credentials are available in the environment."""
     if not ALPACA_KEY or not ALPACA_SECRET:
         print("ERROR: Alpaca keys not set in .env")
         print("\nSet these in .env:")
@@ -257,10 +269,12 @@ def check_alpaca_keys():
 
 
 def ticker_print(ticker, message):
+    """Print a log line prefixed with the current ticker symbol."""
     print(f"[{ticker}] {message}")
 
 
 def get_account():
+    """Fetch the current Alpaca account payload."""
     resp = requests.get(f"{ALPACA_URL}/v2/account", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -268,6 +282,7 @@ def get_account():
 
 
 def get_asset(symbol):
+    """Fetch Alpaca asset metadata for an underlying symbol."""
     resp = requests.get(f"{ALPACA_URL}/v2/assets/{symbol}", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -275,6 +290,7 @@ def get_asset(symbol):
 
 
 def get_position(symbol="SPY"):
+    """Fetch the current Alpaca position for a symbol, if any."""
     resp = requests.get(f"{ALPACA_URL}/v2/positions/{symbol}", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -282,6 +298,7 @@ def get_position(symbol="SPY"):
 
 
 def get_all_positions():
+    """Fetch all open Alpaca positions for the account."""
     resp = requests.get(f"{ALPACA_URL}/v2/positions", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -289,6 +306,7 @@ def get_all_positions():
 
 
 def get_market_status():
+    """Return whether Alpaca currently reports the market as open."""
     resp = requests.get(f"{ALPACA_URL}/v2/clock", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json().get("is_open", False)
@@ -299,6 +317,7 @@ POSITION_STATE_FILE = os.path.join(PROJECT_DIR, "position_state.json")
 
 
 def load_position_state():
+    """Load the local JSON cache used to track entry prices and dates."""
     if os.path.exists(POSITION_STATE_FILE):
         with open(POSITION_STATE_FILE) as f:
             return json.load(f)
@@ -306,12 +325,13 @@ def load_position_state():
 
 
 def save_position_state(state):
+    """Persist the local position state cache to disk."""
     with open(POSITION_STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
 
 
 def check_risk_exits(ticker, current_price):
-    """Check stop-loss, take-profit, and max hold day exits"""
+    """Determine whether a cached position should be exited for risk reasons."""
     state = load_position_state()
     
     if ticker not in state or "entry_price" not in state[ticker]:
@@ -347,7 +367,7 @@ def check_risk_exits(ticker, current_price):
 
 
 def update_position_state(ticker, side, entry_price, qty):
-    """Update position state after trade"""
+    """Record local position metadata after opening a trade."""
     state = load_position_state()
     state[ticker] = {
         "side": side,
@@ -359,7 +379,7 @@ def update_position_state(ticker, side, entry_price, qty):
 
 
 def clear_position_state(ticker):
-    """Clear position state after closing"""
+    """Remove local position metadata after a position is closed."""
     state = load_position_state()
     if ticker in state:
         del state[ticker]
@@ -367,6 +387,7 @@ def clear_position_state(ticker):
 
 
 def get_open_orders():
+    """Fetch the account's currently open Alpaca orders."""
     resp = requests.get(f"{ALPACA_URL}/v2/orders?status=open", headers=HEADERS)
     if resp.status_code == 200:
         return resp.json()
@@ -374,6 +395,7 @@ def get_open_orders():
 
 
 def get_orders(status="all", limit=500, after=None):
+    """Fetch Alpaca orders with optional status, count, and lower time bound."""
     params = {"status": status, "limit": limit, "direction": "desc", "nested": "true"}
     if after:
         params["after"] = after
@@ -384,6 +406,7 @@ def get_orders(status="all", limit=500, after=None):
 
 
 def place_order(symbol, qty, side, asset_class="us_equity"):
+    """Submit a market order to Alpaca for an equity or option contract."""
     order = {
         "symbol": symbol,
         "qty": str(qty),
@@ -398,11 +421,13 @@ def place_order(symbol, qty, side, asset_class="us_equity"):
 
 
 def close_position(symbol="SPY"):
+    """Submit a close request for an open Alpaca position."""
     resp = requests.delete(f"{ALPACA_URL}/v2/positions/{symbol}", headers=HEADERS)
     return resp.json() if resp.status_code in [200, 204] else {"error": resp.text}
 
 
 def log_signal(action, price, probability, direction):
+    """Append a normalized signal and execution log entry to `logs/signals.log`."""
     log_file = os.path.join(PROJECT_DIR, "logs", "signals.log")
     os.makedirs(os.path.join(PROJECT_DIR, "logs"), exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -413,6 +438,7 @@ def log_signal(action, price, probability, direction):
 
 
 def get_option_contract(symbol_or_id):
+    """Fetch Alpaca metadata for an option contract symbol or id."""
     resp = requests.get(
         f"{ALPACA_URL}/v2/options/contracts/{symbol_or_id}", headers=HEADERS
     )
@@ -422,10 +448,12 @@ def get_option_contract(symbol_or_id):
 
 
 def get_today_order_window_start():
+    """Return the UTC ISO timestamp marking the start of the current day."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
 
 
 def order_belongs_to_ticker(order, ticker, option_contract_cache):
+    """Check whether an equity or option order is associated with a ticker."""
     if order.get("symbol") == ticker:
         return True
 
@@ -444,6 +472,7 @@ def order_belongs_to_ticker(order, ticker, option_contract_cache):
 
 
 def has_traded_today(ticker):
+    """Return whether a non-canceled order already exists for the ticker today."""
     option_contract_cache = {}
     today_orders = get_orders(after=get_today_order_window_start())
 
@@ -457,6 +486,7 @@ def has_traded_today(ticker):
 
 
 def list_option_contracts(ticker, contract_type, current_price):
+    """List live Alpaca option contracts that fit the configured filter window."""
     start_date = (datetime.now() + timedelta(days=OPTIONS_MIN_DTE)).date().isoformat()
     end_date = (datetime.now() + timedelta(days=OPTIONS_MAX_DTE)).date().isoformat()
     strike_min = round(current_price * (1 - OPTIONS_STRIKE_WINDOW), 2)
@@ -481,6 +511,7 @@ def list_option_contracts(ticker, contract_type, current_price):
 
 
 def select_option_contract(ticker, contract_type, current_price):
+    """Pick the nearest suitable live option contract for the requested direction."""
     contracts = list_option_contracts(ticker, contract_type, current_price)
     valid_contracts = []
     for contract in contracts:
@@ -512,6 +543,7 @@ def select_option_contract(ticker, contract_type, current_price):
 
 
 def estimate_expected_move_pct(features, current_price, confidence_gap):
+    """Estimate a normalized expected move from ATR and model confidence."""
     atr = float(features["ATR"].iloc[-1]) if "ATR" in features.columns else 0
     atr_move_pct = (atr / current_price) if current_price > 0 else 0
     confidence_scale = max(confidence_gap, 0)
@@ -519,6 +551,7 @@ def estimate_expected_move_pct(features, current_price, confidence_gap):
 
 
 def load_mode_selector(ticker):
+    """Load the learned live trade-mode selector artifact for a ticker."""
     selector_path = os.path.join(config.get_model_dir(ticker), MODE_SELECTOR_FILENAME)
     if not os.path.exists(selector_path):
         return None
@@ -527,6 +560,7 @@ def load_mode_selector(ticker):
 
 
 def build_live_selector_features(features, current_price, prob_up):
+    """Build the live feature row consumed by the mode selector model."""
     latest = features.iloc[-1]
     feature_map = {
         "prob_up": prob_up,
@@ -546,11 +580,13 @@ def build_live_selector_features(features, current_price, prob_up):
 
 
 def estimate_equity_edge(prob_up, expected_move_pct):
+    """Estimate relative equity attractiveness from signal strength and expected move."""
     confidence_gap = abs(prob_up - 0.5)
     return expected_move_pct * confidence_gap * 2
 
 
 def estimate_option_edge(contract, current_price, expected_move_pct):
+    """Estimate relative option attractiveness after premium and moneyness penalties."""
     premium = float(contract.get("close_price") or 0)
     strike_price = float(contract.get("strike_price") or current_price)
     if premium <= 0 or current_price <= 0:
@@ -568,6 +604,7 @@ def estimate_option_edge(contract, current_price, expected_move_pct):
 
 
 def choose_trade_mode(ticker, account, current_price, prob_up, features):
+    """Choose equity, option, or hold using the selector artifact or heuristic fallback."""
     selector_artifact = load_mode_selector(ticker)
     confidence_gap = abs(prob_up - 0.5)
     direction = "UP" if prob_up > 0.5 else "DOWN"
@@ -673,6 +710,7 @@ def choose_trade_mode(ticker, account, current_price, prob_up, features):
 
 
 def find_option_position_for_underlying(ticker):
+    """Find an open option position whose underlying matches the ticker."""
     for position in get_all_positions():
         if position.get("asset_class") != "option":
             continue
@@ -683,6 +721,7 @@ def find_option_position_for_underlying(ticker):
 
 
 def has_pending_option_order(ticker):
+    """Return whether an open option order already exists for the ticker."""
     for order in get_open_orders():
         if order.get("asset_class") != "option":
             continue
@@ -693,12 +732,14 @@ def has_pending_option_order(ticker):
 
 
 def account_supports_options(account):
+    """Check whether the Alpaca account has minimum options approval enabled."""
     approved_level = int(account.get("options_approved_level") or 0)
     trading_level = int(account.get("options_trading_level") or 0)
     return approved_level >= 1 and trading_level >= 1
 
 
 def get_equity_trade_context(ticker, cash):
+    """Collect asset, position, borrowability, and sizing context for equity trading."""
     asset = get_asset(ticker)
     position = get_position(ticker)
     shares = int(float(position["qty"])) if position else 0
@@ -722,6 +763,7 @@ def get_equity_trade_context(ticker, cash):
 
 
 def evaluate_signal(features, current_price, prob_up):
+    """Evaluate long and short execution rules for the latest model prediction."""
     latest = features.iloc[-1]
     prob_down = 1 - prob_up
     confidence_gap = abs(prob_up - 0.5)
@@ -758,6 +800,7 @@ def evaluate_signal(features, current_price, prob_up):
 
 
 def describe_signal_rejection(signal, prob_up):
+    """Explain why a signal failed the configured trade filters."""
     reasons = []
     if prob_up > 0.5:
         if prob_up < LONG_ENTRY_THRESHOLD:
@@ -786,6 +829,7 @@ def describe_signal_rejection(signal, prob_up):
 
 
 def trade_equity(ticker, account, current_price, prob_up, features):
+    """Execute the equity-side trade logic for a ticker and current signal."""
     cash = float(account.get("cash", 0))
     context = get_equity_trade_context(ticker, cash)
     shares = context["shares"]
@@ -904,6 +948,7 @@ def trade_equity(ticker, account, current_price, prob_up, features):
 
 
 def trade_option(ticker, account, current_price, prob_up, features, selected_contract=None):
+    """Execute the option-side trade logic for a ticker and current signal."""
     signal = evaluate_signal(features, current_price, prob_up)
     if ticker not in OPTIONS_ENABLED_UNDERLYINGS:
         ticker_print(ticker, ">>> HOLD - Options disabled for this underlying")
@@ -1003,6 +1048,7 @@ def trade_option(ticker, account, current_price, prob_up, features, selected_con
 
 
 def main(ticker):
+    """Run the live trading workflow for one ticker."""
     ticker_print(ticker, "=" * 50)
     ticker_print(ticker, f"Enhanced Alpaca Paper Trading Bot - {ticker}")
     ticker_print(ticker, "=" * 50)
@@ -1077,10 +1123,7 @@ def main(ticker):
 
 
 def find_trades():
-    """
-    Evaluate all tickers and return list of trades that meet threshold.
-    Returns list of dicts with ticker, prob_up, confidence_gap, action, current_price.
-    """
+    """Scan all configured tickers and return only actionable trade candidates."""
     import concurrent.futures
     
     global LONG_ENTRY_THRESHOLD, MIN_CONFIDENCE_GAP
@@ -1089,6 +1132,7 @@ def find_trades():
     results = []
     
     def evaluate_ticker(ticker):
+        """Evaluate one ticker and return its current actionable signal summary."""
         try:
             long_entry, min_gap = get_ticker_thresholds(ticker)
             
@@ -1145,11 +1189,7 @@ def find_trades():
 
 
 def execute_trades(trades, trade_mode=None):
-    """
-    Execute a list of trades.
-    trades: list of dicts from find_trades()
-    trade_mode: "equity", "option", or "auto" (default from config)
-    """
+    """Execute a batch of precomputed trade candidates against Alpaca."""
     if not check_alpaca_keys():
         print("ERROR: Alpaca keys not configured")
         return
@@ -1225,6 +1265,7 @@ if __name__ == "__main__":
         print(f"{'#' * 60}\n")
 
         def trade_single_ticker(ticker):
+            """Run the single-ticker live trading workflow inside the thread pool."""
             main(ticker)
 
         with concurrent.futures.ThreadPoolExecutor(

@@ -22,6 +22,7 @@ LOOK_BACK = 60
 
 
 def compute_rsi(prices, period=14):
+    """Compute the relative strength index for a price series."""
     delta = prices.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -31,6 +32,7 @@ def compute_rsi(prices, period=14):
 
 
 def compute_macd(prices, fast=12, slow=26, signal=9):
+    """Compute MACD, signal, and histogram series from close prices."""
     ema_fast = prices.ewm(span=fast, adjust=False).mean()
     ema_slow = prices.ewm(span=slow, adjust=False).mean()
     macd = ema_fast - ema_slow
@@ -40,6 +42,7 @@ def compute_macd(prices, fast=12, slow=26, signal=9):
 
 
 def compute_bollinger_bands(prices, period=20):
+    """Compute Bollinger band center, upper band, and lower band."""
     sma = prices.rolling(window=period).mean()
     std = prices.rolling(window=period).std()
     upper = sma + (std * 2)
@@ -48,6 +51,7 @@ def compute_bollinger_bands(prices, period=20):
 
 
 def compute_atr(high, low, close, period=14):
+    """Compute average true range over the requested rolling period."""
     tr = np.maximum(
         high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1)))
     )
@@ -56,6 +60,7 @@ def compute_atr(high, low, close, period=14):
 
 
 def add_technical_indicators(df):
+    """Append the model's technical indicator feature set to a price DataFrame."""
     print("\nAdding technical indicators...")
 
     close = df["Close"]
@@ -112,6 +117,7 @@ def add_technical_indicators(df):
 
 
 def download_data():
+    """Download raw historical data for the current global ticker list."""
     print("Downloading historical data...")
     data_frames = []
 
@@ -130,6 +136,7 @@ def download_data():
 
 
 def feature_selection(df):
+    """Extract model feature columns and binary direction labels from raw data."""
     print("\nFeature Selection:")
     print("  Features: OHLCV + Technical Indicators")
 
@@ -175,6 +182,7 @@ def feature_selection(df):
 
 
 def normalize_data(data):
+    """Scale features with MinMaxScaler and persist the fitted scaler."""
     print("\nApplying Min-Max Scaling...")
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data)
@@ -190,6 +198,7 @@ def normalize_data(data):
 
 
 def create_sequences(data, labels, look_back=LOOK_BACK):
+    """Create rolling look-back windows with price and direction targets."""
     print(f"\nCreating sequences with look-back window of {look_back}...")
     X, y = [], []
     y_direction = []
@@ -220,7 +229,7 @@ def create_sequences(data, labels, look_back=LOOK_BACK):
 
 
 def create_sequences_flat(data, labels, look_back=LOOK_BACK):
-    """Flat sequences for XGBoost (not 3D)"""
+    """Flatten rolling sequences into 2D feature vectors for XGBoost."""
     print(f"\nCreating flat sequences for XGBoost...")
     X, y, y_direction = create_sequences(data, labels, look_back)
 
@@ -234,6 +243,7 @@ def create_sequences_flat(data, labels, look_back=LOOK_BACK):
 
 
 def train_test_split(X, y, y_direction, train_ratio=0.8):
+    """Split sequential datasets into train and test partitions without shuffling."""
     print(f"\nSplitting data with train ratio {train_ratio}...")
     train_size = int(len(X) * train_ratio)
 
@@ -248,7 +258,7 @@ def train_test_split(X, y, y_direction, train_ratio=0.8):
 
 
 def save_data(X, y, y_direction, X_flat, X_train_size):
-    """Save data files with ticker-specific naming"""
+    """Persist per-ticker sequence, label, and flattened training artifacts."""
     ticker_dir = config.get_data_dir(TICKERS[0])
     os.makedirs(ticker_dir, exist_ok=True)
 
@@ -276,7 +286,7 @@ def save_data(X, y, y_direction, X_flat, X_train_size):
 
 
 def download_and_process_ticker(ticker, period=PERIOD, look_back=LOOK_BACK):
-    """Download and process data for a single ticker"""
+    """Build all in-memory training arrays for one ticker from fresh market data."""
     print(f"\n{'=' * 60}")
     print(f"Processing ticker: {ticker}")
     print(f"{'=' * 60}")
@@ -388,6 +398,7 @@ def download_and_process_ticker(ticker, period=PERIOD, look_back=LOOK_BACK):
 
 
 def main():
+    """Parse CLI arguments and prepare datasets for one or more tickers."""
     parser = argparse.ArgumentParser(description="Prepare data for trading bot")
     parser.add_argument(
         "--ticker", type=str, default=None, help="Specific ticker to process"

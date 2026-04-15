@@ -58,6 +58,7 @@ SELECTOR_FEATURE_COLUMNS = [
 
 
 def load_scaler(ticker=None):
+    """Load the saved feature scaler for a ticker."""
     if ticker is None:
         ticker = config.TICKERS[0] if config.TICKERS else "SPY"
     with open(f"{config.get_data_dir(ticker)}/scaler.pkl", "rb") as f:
@@ -65,6 +66,7 @@ def load_scaler(ticker=None):
 
 
 def load_data(ticker=None):
+    """Load raw price history and test-direction labels for a ticker."""
     if ticker is None:
         ticker = config.TICKERS[0] if config.TICKERS else "SPY"
     raw_df = pd.read_csv(
@@ -75,6 +77,7 @@ def load_data(ticker=None):
 
 
 def get_feature_columns():
+    """Return the ordered feature columns expected by the models."""
     return [
         "Open",
         "High",
@@ -105,6 +108,7 @@ def get_feature_columns():
 
 
 def compute_rsi(prices, period=14):
+    """Compute the relative strength index for a price series."""
     delta = prices.diff()
     gain = delta.where(delta > 0, 0).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
@@ -114,6 +118,7 @@ def compute_rsi(prices, period=14):
 
 
 def compute_macd(prices, fast=12, slow=26, signal=9):
+    """Compute MACD, signal, and histogram series from close prices."""
     ema_fast = prices.ewm(span=fast, adjust=False).mean()
     ema_slow = prices.ewm(span=slow, adjust=False).mean()
     macd = ema_fast - ema_slow
@@ -123,6 +128,7 @@ def compute_macd(prices, fast=12, slow=26, signal=9):
 
 
 def compute_bollinger_bands(prices, period=20):
+    """Compute Bollinger band center, upper band, and lower band."""
     sma = prices.rolling(window=period).mean()
     std = prices.rolling(window=period).std()
     upper = sma + (std * 2)
@@ -131,6 +137,7 @@ def compute_bollinger_bands(prices, period=20):
 
 
 def compute_atr(high, low, close, period=14):
+    """Compute average true range over the requested rolling period."""
     tr = np.maximum(
         high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1)))
     )
@@ -139,6 +146,7 @@ def compute_atr(high, low, close, period=14):
 
 
 def add_technical_indicators(df):
+    """Append the backtest feature set to a raw OHLCV DataFrame."""
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
@@ -172,12 +180,14 @@ def add_technical_indicators(df):
 
 
 def load_classifier_model(ticker=None):
+    """Load the trained classifier model for a ticker."""
     if ticker is None:
         ticker = config.TICKERS[0] if config.TICKERS else "SPY"
     return load_model(f"{config.get_model_dir(ticker)}/classifier_model.keras")
 
 
 def predict_directions(model, scaler, raw_df, look_back=LOOK_BACK):
+    """Generate rolling classifier probabilities and aligned ground-truth labels."""
     print("\nGenerating predictions for each timestep...")
 
     df = add_technical_indicators(raw_df)
@@ -205,6 +215,7 @@ def predict_directions(model, scaler, raw_df, look_back=LOOK_BACK):
 def backtest_classifier(
     probabilities, actual_directions, prices, features_df, ticker=None
 ):
+    """Simulate equity long and short trades from classifier outputs."""
     if ticker is None:
         ticker = config.TICKERS[0] if config.TICKERS else "SPY"
     initial_capital = 10000
@@ -329,7 +340,7 @@ def backtest_classifier(
 
 
 def analyze_model_confidence(probabilities, actuals):
-    """Analyze model confidence distribution"""
+    """Summarize confidence and simple threshold accuracy statistics."""
     mean_confidence = np.mean(np.abs(probabilities - 0.5)) * 2
     std_confidence = np.std(np.abs(probabilities - 0.5)) * 2
     
@@ -353,7 +364,7 @@ def analyze_model_confidence(probabilities, actuals):
 
 
 def run_backtest_with_thresholds(probabilities, prices, features_df, long_entry, short_entry, min_conf_gap):
-    """Run backtest with specific thresholds - returns metrics"""
+    """Backtest one threshold configuration and return metrics plus trade history."""
     initial_capital = 10000
     capital = initial_capital
     position = 0
@@ -459,7 +470,7 @@ def run_backtest_with_thresholds(probabilities, prices, features_df, long_entry,
 
 
 def auto_tune_thresholds(ticker, probabilities, actuals, prices, features_df):
-    """Find optimal thresholds by testing combinations - optimize for Sharpe"""
+    """Search threshold combinations and keep the best Sharpe-valid configuration."""
     print(f"\nAuto-tuning thresholds for {ticker}...")
     
     analysis = analyze_model_confidence(probabilities, actuals)
@@ -510,7 +521,7 @@ def auto_tune_thresholds(ticker, probabilities, actuals, prices, features_df):
 
 
 def save_tuned_thresholds(ticker, thresholds):
-    """Save tuned thresholds to JSON file"""
+    """Persist tuned threshold values and summary metrics for a ticker."""
     model_dir = config.get_model_dir(ticker)
     filepath = os.path.join(model_dir, "tuned_thresholds.json")
     
@@ -532,7 +543,7 @@ def save_tuned_thresholds(ticker, thresholds):
 
 
 def load_tuned_thresholds(ticker):
-    """Load tuned thresholds from JSON file"""
+    """Load previously saved threshold tuning results for a ticker."""
     filepath = os.path.join(config.get_model_dir(ticker), "tuned_thresholds.json")
     if os.path.exists(filepath):
         with open(filepath) as f:
@@ -543,6 +554,7 @@ def load_tuned_thresholds(ticker):
 
 
 def align_prediction_frame(test_df, probabilities):
+    """Align backtest rows, indicators, and prediction outputs into one frame."""
     df = add_technical_indicators(test_df.copy())
     aligned = df.iloc[LOOK_BACK:].copy().reset_index(drop=True)
     signal_reference = df.iloc[LOOK_BACK - 1 : -1].copy().reset_index(drop=True)
@@ -581,6 +593,7 @@ def align_prediction_frame(test_df, probabilities):
 
 
 def simulate_option_return(row):
+    """Approximate a single-step option return from underlying movement proxies."""
     direction = 1 if row["prob_up"] >= 0.5 else -1
     directional_move = direction * row["session_return"]
     atr_pct = max(
@@ -598,6 +611,7 @@ def simulate_option_return(row):
 
 
 def build_mode_selector_dataset(test_df, probabilities, threshold):
+    """Build the supervised dataset used to train the equity-vs-option selector."""
     aligned = align_prediction_frame(test_df, probabilities)
     aligned["signal_active"] = (
         (
@@ -650,6 +664,7 @@ def build_mode_selector_dataset(test_df, probabilities, threshold):
 
 
 def train_mode_selector(selector_df, ticker):
+    """Train and persist the learned equity-versus-option mode selector."""
     if len(selector_df) < 25:
         print(
             f"Skipping selector training for {ticker}: not enough signal rows ({len(selector_df)})"
@@ -702,7 +717,7 @@ def train_mode_selector(selector_df, ticker):
 
 
 def backtest_single_ticker(ticker):
-    """Backtest a single ticker"""
+    """Run the full backtest workflow, tuning, metrics, and selector export for one ticker."""
     print(f"\n{'=' * 60}")
     print(f"Backtesting ticker: {ticker}")
     print(f"{'=' * 60}")
@@ -806,6 +821,7 @@ def backtest_single_ticker(ticker):
 
 
 def calculate_metrics(portfolio_value, trades, initial_capital=10000):
+    """Compute performance and trade outcome metrics from a backtest run."""
     portfolio = np.array(portfolio_value)
 
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -876,6 +892,7 @@ def calculate_metrics(portfolio_value, trades, initial_capital=10000):
 
 
 def main():
+    """Parse CLI arguments and run backtests for the requested tickers."""
     parser = argparse.ArgumentParser(description="Backtest trading strategy")
     parser.add_argument(
         "--ticker", type=str, default=None, help="Specific ticker to backtest"

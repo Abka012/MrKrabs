@@ -20,7 +20,7 @@ import config
 
 
 def run_command(cmd, description):
-    """Run a command and print the result"""
+    """Run a pipeline step command and stream its output to the terminal."""
     print(f"\n{'=' * 60}")
     print(f"{description}")
     print(f"{'=' * 60}")
@@ -31,6 +31,7 @@ def run_command(cmd, description):
 
 
 def main():
+    """Parse CLI arguments and run the full data, training, backtest, and trade flow."""
     parser = argparse.ArgumentParser(
         description="Run full pipeline: prepare + train + backtest + trade"
     )

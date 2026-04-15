@@ -25,7 +25,7 @@ BATCH_SIZE = 32
 
 
 def load_data(ticker=None, flat=False):
-    """Load data for a specific ticker (or use first ticker from config)"""
+    """Load saved training arrays for a ticker, optionally using flattened features."""
     if ticker is None:
         # Use first ticker from config
         ticker = config.TICKERS[0] if config.TICKERS else "SPY"
@@ -57,7 +57,7 @@ def load_data(ticker=None, flat=False):
 
 
 def build_regression_model():
-    """LSTM for price regression"""
+    """Build the LSTM regression model used for next-price prediction."""
     print("\nBuilding LSTM Regression Model...")
 
     model = Sequential(
@@ -83,7 +83,7 @@ def build_regression_model():
 
 
 def build_classifier_model():
-    """Bidirectional LSTM for directional classification"""
+    """Build the bidirectional LSTM classifier used for direction prediction."""
     print("\nBuilding Directional Classifier Model...")
 
     model = Sequential(
@@ -109,7 +109,7 @@ def build_classifier_model():
 
 
 def build_classifier_model():
-    """Bidirectional LSTM for directional classification"""
+    """Build the bidirectional LSTM classifier used for direction prediction."""
     print("\nBuilding Directional Classifier Model...")
 
     model = Sequential(
@@ -135,6 +135,7 @@ def build_classifier_model():
 
 
 def train_regression(model, X_train, y_train, X_test, y_test, ticker):
+    """Train the regression model and save the best checkpoint for a ticker."""
     print("\nTraining Regression Model...")
 
     callbacks = [
@@ -162,6 +163,7 @@ def train_regression(model, X_train, y_train, X_test, y_test, ticker):
 
 
 def train_classifier(model, X_train, y_dir_train, X_test, y_dir_test, ticker):
+    """Train the directional classifier and save the best checkpoint for a ticker."""
     print("\nTraining Classifier Model...")
 
     callbacks = [
@@ -189,6 +191,7 @@ def train_classifier(model, X_train, y_dir_train, X_test, y_dir_test, ticker):
 
 
 def evaluate_model(model, X_test, y_test, model_type="regression"):
+    """Evaluate a trained regression or classification model on held-out data."""
     print(f"\nEvaluating {model_type} Model...")
 
     if model_type == "classifier":
@@ -218,7 +221,7 @@ def evaluate_model(model, X_test, y_test, model_type="regression"):
 
 
 def train_xgboost(ticker):
-    """Train XGBoost classifier on flat features"""
+    """Train and persist the XGBoost directional classifier for a ticker."""
     print("\n" + "=" * 50)
     print("Training XGBoost Classifier")
     print("=" * 50)
@@ -277,7 +280,7 @@ def train_xgboost(ticker):
 
 
 def train_single_ticker(ticker):
-    """Train models for a single ticker"""
+    """Train all model variants and write artifacts for one ticker."""
     print(f"\n{'=' * 60}")
     print(f"Training models for ticker: {ticker}")
     print(f"{'=' * 60}")
@@ -321,6 +324,7 @@ def train_single_ticker(ticker):
 
 
 def main():
+    """Parse CLI arguments and train models for the requested tickers."""
     parser = argparse.ArgumentParser(description="Train trading models")
     parser.add_argument(
         "--ticker", type=str, default=None, help="Specific ticker to train"
